@@ -3,16 +3,25 @@ Section: admin
 Priority: optional
 Maintainer: Pierre Kisters <pierrekisters@gmail.com>
 Build-Depends: debhelper-compat (= 13)
-Standards-Version: 4.7.0
+Standards-Version: 4.7.2
 Rules-Requires-Root: no
+Homepage: https://github.com/lhns/pve-cloudinit-extras
+Vcs-Git: https://github.com/lhns/pve-cloudinit-extras.git
+Vcs-Browser: https://github.com/lhns/pve-cloudinit-extras
 
 Package: pve-cloudinit-extras
 Architecture: all
-Depends: pve-manager (>= 9.2), pve-manager (<< 10), qemu-server, libpve-storage-perl,
- libjson-perl, libtemplate-perl, ${misc:Depends}
+Depends: pve-manager (>= 9),
+         libjson-perl,
+         libtemplate-perl,
+         perl,
+         ${misc:Depends}
 Description: custom files, commands and include for the Proxmox VE Cloud-Init tab
- Adds "Custom files" (cicustom), "Commands" (runcmd) and "Include" (snippet or
- URL) rows to the VM Cloud-Init panel. Commands and Include are written into a
- per-VM multipart vendor-data snippet by a small API endpoint. GUI and API hooks
- are marker lines in pve-manager files, re-applied by dpkg triggers after
- upgrades, gated by version and removed exactly on uninstall.
+ Adds "Custom files" (cicustom), "Commands" (runcmd), "Boot commands"
+ (bootcmd) and "Include" (snippet or URL) rows to the VM Cloud-Init panel.
+ Commands and Include are written into one generated per-VM vendor-data
+ snippet by a small API endpoint.
+ .
+ The GUI and API hooks are marker lines in two pve-manager files. dpkg
+ triggers re-apply them after pve-manager upgrades; untested pve-manager
+ versions are left stock, and removal restores the files exactly.

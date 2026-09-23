@@ -1,7 +1,0 @@
-#!/usr/bin/perl
-# STUB. Root-only CLI using the same generator as the API (PLAN.md §6):
-#   pve-cloudinit-extras vendor <vmid> --storage S [--commands-file F] [--include-url U | --include-snippet V]
-# Prints the resulting cicustom vendor= value ('' = clear). Does not change the VM config.
-use strict;
-use warnings;
-die "not implemented\n";

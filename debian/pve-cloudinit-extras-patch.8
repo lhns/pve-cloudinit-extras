@@ -1,0 +1,29 @@
+.TH PVE-CLOUDINIT-EXTRAS-PATCH 8
+.SH NAME
+pve-cloudinit-extras-patch \- apply or remove the pve-cloudinit-extras hooks in pve-manager
+.SH SYNOPSIS
+.B pve-cloudinit-extras-patch
+.RB [ gui | api | all ]
+.BR apply | remove | status
+.SH DESCRIPTION
+Adds (apply) or removes (remove) the marker lines that load the pve-cloudinit-extras GUI in
+.I /usr/share/pve-manager/index.html.tpl
+and register its API in
+.IR /usr/share/perl5/PVE/API2/Nodes.pm .
+The package runs this from its maintainer scripts and dpkg triggers; running it by hand is only
+needed after changing
+.IR /etc/pve-cloudinit-extras.conf .
+.PP
+apply leaves a file stock if the installed pve-manager version is not listed in
+.I /usr/share/pve-cloudinit-extras/supported
+or its anchor line is not found exactly once. remove deletes the marker lines and checks the file
+against pve-manager's md5sums, restoring it from the pve-manager .deb if it differs.
+Both always exit 0; the outcome is logged to syslog and shown by status.
+.SH FILES
+.TP
+.I /etc/pve-cloudinit-extras.conf
+FORCE=1 ignores the version list (for testing a new pve-manager).
+.br
+SKIP_LOAD_TEST=1 skips loading the patched Nodes.pm (for test containers without the full PVE stack).
+.SH SEE ALSO
+https://github.com/lhns/pve-cloudinit-extras

@@ -1,46 +1,285 @@
-#!/bin/sh
-# STUB. Usage: pve-cloudinit-extras-patch gui|api apply|remove|status
-# Contract (PLAN.md §4, §5, §8): idempotent, flock'd, never exits non-zero from dpkg hooks,
-# refuses unknown pve-manager versions, removes exactly the marker lines it added.
-set -eu
+#!/usr/bin/perl
+# Usage: pve-cloudinit-extras-patch [gui|api|all] apply|remove|status
+#
+# Adds or removes our marker lines in two files owned by pve-manager. Idempotent, serialised by
+# a lock, and exits 0 for apply/remove whatever happens: it runs from dpkg hooks, and the worst
+# acceptable outcome is "files left stock". Design: PLAN.md §4-§8.
 
-MARK=pve-cloudinit-extras
-TPL=/usr/share/pve-manager/index.html.tpl
-TPL_ANCHOR='src="/pve2/js/pvemanagerlib.js?ver=[% version %]"></script>'
-NODES=/usr/share/perl5/PVE/API2/Nodes.pm
-STATE=/var/lib/pve-cloudinit-extras
+use strict;
+use warnings;
 
-log() { logger -t "$MARK" -- "$*"; mkdir -p "$STATE"; echo "$*" > "$STATE/status-$TARGET"; }
+use Digest::MD5;
+use Fcntl qw(:flock);
+use File::Temp qw(tempdir);
 
-# TODO version_ok: compare `dpkg-query -W -f='${Version}' pve-manager` against src/supported
-#      (dpkg --compare-versions), honour FORCE=1 in /etc/pve-cloudinit-extras.conf.
-# TODO is_stock FILE: md5 of FILE equals its line in /var/lib/dpkg/info/pve-manager.md5sums.
-# TODO restore_from_deb FILE: apt-get download pve-manager=<installed>; dpkg-deb --fsys-tarfile | tar -xO.
+my $VERSION = '@VERSION@';
+my $MARK = 'pve-cloudinit-extras';
+my $STATE = '/var/lib/pve-cloudinit-extras';
+my $SUPPORTED = '/usr/share/pve-cloudinit-extras/supported';
+my $CONF = '/etc/pve-cloudinit-extras.conf';
+my $LOCK = '/run/lock/pve-cloudinit-extras.lock';
 
-TARGET=${1:?gui|api}; ACTION=${2:?apply|remove|status}
-exec 9>/run/lock/$MARK.lock; flock 9
+my $TARGETS = {
+    gui => {
+        file => '/usr/share/pve-manager/index.html.tpl',
+        is_ours => sub { $_[0] =~ /\bdata-\Q$MARK\E\b/ },
+        insert => \&insert_gui,
+    },
+    api => {
+        file => '/usr/share/perl5/PVE/API2/Nodes.pm',
+        is_ours => sub { $_[0] =~ /# \Q$MARK\E$/ },
+        insert => \&insert_api,
+        after_change => \&reload_daemons,
+        verify => \&load_test_api,
+    },
+};
 
-case "$TARGET/$ACTION" in
-    gui/apply)
-        # grep -qF "data-$MARK" "$TPL" && exit 0
-        # version_ok gui || { log "skip: unsupported pve-manager"; exit 0; }
-        # [ "$(grep -cF "$TPL_ANCHOR" "$TPL")" = 1 ] || { log "skip: anchor not found once"; exit 0; }
-        # insert '<script ... data-pve-cloudinit-extras></script>' after anchor into tmp,
-        # perl -MTemplate compile check, mv into place
-        ;;
-    gui/remove)
-        # sed "/data-$MARK/d" -> tmp -> mv; is_stock "$TPL" || restore_from_deb "$TPL" || log "run: apt install --reinstall pve-manager"
-        ;;
-    api/apply)
-        # as gui/apply for $NODES: two lines tagged "# $MARK"; then
-        # perl -e 'use PVE::API2::Nodes' || restore; systemctl reload-or-restart pvedaemon pveproxy
-        ;;
-    api/remove)
-        # sed "/# $MARK\$/d"; is_stock || restore_from_deb; systemctl reload-or-restart pvedaemon pveproxy
-        ;;
-    */status)
-        cat "$STATE/status-$TARGET" 2>/dev/null || echo unknown
-        ;;
-    *) echo "usage: $0 gui|api apply|remove|status" >&2; exit 2 ;;
-esac
-echo "TODO: not implemented" >&2
+my $CONFIG = read_conf();
+
+sub read_conf {
+    my $c = {};
+    open(my $fh, '<', $CONF) or return $c;
+    while (<$fh>) {
+        $c->{$1} = $2 if /^\s*([A-Z_]+)\s*=\s*"?([^"\s]*)"?\s*$/;
+    }
+    return $c;
+}
+
+sub msg {
+    my ($target, $text) = @_;
+    print "$MARK: $target: $text\n";
+    system('logger', '-t', $MARK, '--', "$target: $text") if -x '/usr/bin/logger';
+    if (mkdir($STATE) || -d $STATE) {
+        if (open(my $fh, '>', "$STATE/status-$target")) {
+            print $fh "$text\n";
+            close($fh);
+        }
+    }
+}
+
+sub slurp {
+    my ($file) = @_;
+    open(my $fh, '<:raw', $file) or die "cannot read $file: $!\n";
+    local $/;
+    return scalar(<$fh>);
+}
+
+# Atomic replace that keeps the original mode.
+sub replace_file {
+    my ($file, $content) = @_;
+    my $mode = (stat($file))[2] & 07777;
+    my $tmp = "$file.$MARK.tmp";
+    open(my $fh, '>:raw', $tmp) or die "cannot write $tmp: $!\n";
+    print $fh $content or die "cannot write $tmp: $!\n";
+    close($fh) or die "cannot write $tmp: $!\n";
+    chmod($mode, $tmp);
+    rename($tmp, $file) or die "cannot rename $tmp: $!\n";
+}
+
+sub pve_manager_version {
+    my $v = `dpkg-query -W -f='\${Version}' pve-manager 2>/dev/null`;
+    return $? == 0 && $v ne '' ? $v : undef;
+}
+
+sub version_ok {
+    my ($target) = @_;
+    my $v = pve_manager_version() // return (0, 'pve-manager is not installed');
+    return (1, "pve-manager $v, FORCE=1") if $CONFIG->{FORCE};
+    open(my $fh, '<', $SUPPORTED) or return (0, "cannot read $SUPPORTED");
+    while (<$fh>) {
+        next if /^\s*(#|$)/;
+        my ($t, $min, $max) = split;
+        next if $t ne $target;
+        return (1, "pve-manager $v")
+            if system('dpkg', '--compare-versions', $v, 'ge', $min) == 0
+            && system('dpkg', '--compare-versions', $v, 'lt', $max) == 0;
+    }
+    return (0, "pve-manager $v is not in the tested range for '$target' (see $SUPPORTED)");
+}
+
+sub strip {
+    my ($t, $content) = @_;
+    my @keep = grep { !$t->{is_ours}->($_) } split /^/, $content;
+    return join('', @keep);
+}
+
+# Returns the new content, or dies with the reason the anchor is not usable.
+sub insert_gui {
+    my ($content) = @_;
+    my $anchor = '<script type="text/javascript" src="/pve2/js/pvemanagerlib.js?ver=[% version %]"></script>';
+    my @lines = split /^/, $content;
+    my @hits = grep { $lines[$_] =~ /^(\s*)\Q$anchor\E\s*$/ } 0 .. $#lines;
+    die "anchor (pvemanagerlib.js script line) found " . scalar(@hits) . " times, expected 1\n"
+        if @hits != 1;
+    my ($indent) = $lines[$hits[0]] =~ /^(\s*)/;
+    splice @lines, $hits[0] + 1, 0,
+        qq{$indent<script type="text/javascript" src="/pve2/js/$MARK.js?ver=$VERSION" data-$MARK></script>\n};
+    my $new = join('', @lines);
+
+    require Template; # a broken template would break the whole GUI
+    my $tt = Template->new({});
+    my $out;
+    $tt->process(\$new, {}, \$out) or die "patched template does not compile: " . $tt->error() . "\n";
+    return $new;
+}
+
+sub insert_api {
+    my ($content) = @_;
+    my @lines = split /^/, $content;
+    my @use = grep { $lines[$_] eq "use PVE::API2::VZDump;\n" } 0 .. $#lines;
+    die "anchor 'use PVE::API2::VZDump;' found " . scalar(@use) . " times, expected 1\n"
+        if @use != 1;
+    my @reg = grep {
+        $lines[$_] eq "__PACKAGE__->register_method({\n"
+            && ($lines[$_ + 1] // '') eq "    subclass => \"PVE::API2::Qemu\",\n"
+    } 0 .. $#lines;
+    die "anchor 'register_method PVE::API2::Qemu' found " . scalar(@reg) . " times, expected 1\n"
+        if @reg != 1;
+    my ($pkg2) = grep { $lines[$_] =~ /^package PVE::API2::Nodes;/ } 0 .. $#lines;
+    die "anchors are not in package PVE::API2::Nodes::Nodeinfo\n"
+        if $lines[0] !~ /^package PVE::API2::Nodes::Nodeinfo;/ || !defined($pkg2) || $reg[0] > $pkg2;
+
+    splice @lines, $reg[0], 0,
+        "__PACKAGE__->register_method({ subclass => 'PVE::API2::CloudinitExtras', path => 'cloudinit-extras' }); # $MARK\n";
+    splice @lines, $use[0] + 1, 0, "use PVE::API2::CloudinitExtras; # $MARK\n";
+    return join('', @lines);
+}
+
+sub load_test_api {
+    return if $CONFIG->{SKIP_LOAD_TEST};
+    my $out = `perl -e 'use PVE::API2::Nodes; 1' 2>&1`;
+    die "patched Nodes.pm does not load: $out\n" if $? != 0;
+}
+
+sub reload_daemons {
+    return if !-d '/run/systemd/system';
+    system('systemctl', 'try-reload-or-restart', 'pvedaemon.service', 'pveproxy.service');
+}
+
+sub stock_md5 {
+    my ($file) = @_;
+    (my $rel = $file) =~ s{^/}{};
+    for (split /\n/, `dpkg-query --control-show pve-manager md5sums 2>/dev/null`) {
+        return $1 if /^([0-9a-f]{32})\s+\Q$rel\E$/;
+    }
+    return undef;
+}
+
+sub md5_of { Digest::MD5->new->add($_[0])->hexdigest }
+
+# Fetch the stock file from the installed pve-manager version's .deb (apt cache first).
+sub restore_from_deb {
+    my ($file, $want) = @_;
+    my $v = pve_manager_version() // die "pve-manager is not installed\n";
+    (my $fv = $v) =~ s/:/%3a/g;
+    my $deb = "/var/cache/apt/archives/pve-manager_${fv}_all.deb";
+    my $dir = tempdir(CLEANUP => 1);
+    if (!-f $deb) {
+        system("cd '$dir' && apt-get download -q -o APT::Sandbox::User=root 'pve-manager=$v' >/dev/null 2>&1");
+        ($deb) = glob("$dir/pve-manager_*.deb");
+        die "cannot download pve-manager=$v\n" if !$deb || !-f $deb;
+    }
+    my $content = `dpkg-deb --fsys-tarfile '$deb' | tar -xO '.$file'`;
+    die "cannot extract $file from $deb\n" if $? != 0;
+    die "$file from $deb does not match pve-manager md5sums\n" if md5_of($content) ne $want;
+    replace_file($file, $content);
+}
+
+sub apply {
+    my ($name) = @_;
+    my $t = $TARGETS->{$name};
+    my $file = $t->{file};
+    return msg($name, "skip: $file not found") if !-f $file;
+
+    my $orig = slurp($file);
+    my $clean = strip($t, $orig);
+
+    my ($ok, $why) = version_ok($name);
+    my $new = $clean;
+    if ($ok) {
+        $new = eval { $t->{insert}->($clean) };
+        if (!defined($new)) {
+            $why = "not patched: $@";
+            chomp $why;
+            $new = $clean;
+            $ok = 0;
+        }
+    } else {
+        $why = "not patched: $why";
+    }
+
+    if ($new ne $orig) {
+        replace_file($file, $new);
+        if ($ok && $t->{verify}) {
+            eval { $t->{verify}->() };
+            if (my $err = $@) {
+                replace_file($file, $clean);
+                $ok = 0;
+                $why = "not patched, reverted: $err";
+                chomp $why;
+            }
+        }
+        $t->{after_change}->() if $t->{after_change};
+    }
+    msg($name, $ok ? "applied ($why)" : $why);
+}
+
+sub remove {
+    my ($name) = @_;
+    my $t = $TARGETS->{$name};
+    my $file = $t->{file};
+    return msg($name, "skip: $file not found") if !-f $file;
+
+    my $orig = slurp($file);
+    my $clean = strip($t, $orig);
+    replace_file($file, $clean) if $clean ne $orig;
+
+    my $want = stock_md5($file);
+    my $state;
+    if (!defined($want)) {
+        $state = "removed; $file not in pve-manager md5sums, cannot verify";
+    } elsif (md5_of($clean) eq $want) {
+        $state = 'removed; file is stock';
+    } elsif (eval { restore_from_deb($file, $want); 1 }) {
+        $state = 'removed; file differed from stock and was restored from the pve-manager .deb';
+    } else {
+        my $err = $@;
+        chomp $err;
+        $state = "removed our lines, but $file is not stock ($err);"
+            . " run: apt install --reinstall pve-manager";
+    }
+    $t->{after_change}->() if $t->{after_change} && md5_of(slurp($file)) ne md5_of($orig);
+    msg($name, $state);
+}
+
+sub status {
+    my ($name) = @_;
+    my $t = $TARGETS->{$name};
+    my $content = -f $t->{file} ? slurp($t->{file}) : '';
+    my $n = grep { $t->{is_ours}->($_) } split /^/, $content;
+    my $last = -f "$STATE/status-$name" ? slurp("$STATE/status-$name") : "unknown\n";
+    print "$name: $n marker line(s) in $t->{file}; last: $last";
+}
+
+my @args = @ARGV;
+unshift @args, 'all' if @args == 1;
+my ($which, $action) = @args;
+my @names = !defined($which) ? () : $which eq 'all' ? qw(gui api) : ($which);
+if (!@names || grep { !$TARGETS->{$_} } @names or !defined($action) || $action !~ /^(apply|remove|status)$/) {
+    print STDERR "usage: $0 [gui|api|all] apply|remove|status\n";
+    exit 2;
+}
+
+if ($action eq 'status') {
+    status($_) for @names;
+    exit 0;
+}
+
+my $lock;
+open($lock, '>', $LOCK) or open($lock, '>', "/tmp/$MARK.lock") or die "cannot open lock: $!\n";
+flock($lock, LOCK_EX);
+for my $name (@names) {
+    eval { $action eq 'apply' ? apply($name) : remove($name) };
+    msg($name, "error: $@") if $@;
+}
+exit 0;

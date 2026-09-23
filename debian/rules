@@ -1,3 +1,10 @@
 #!/usr/bin/make -f
+include /usr/share/dpkg/pkg-info.mk
+
 %:
 	dh $@
+
+execute_after_dh_install:
+	sed -i 's/@VERSION@/$(DEB_VERSION)/' \
+	    debian/pve-cloudinit-extras/usr/sbin/pve-cloudinit-extras-patch \
+	    debian/pve-cloudinit-extras/usr/share/perl5/PVE/API2/CloudinitExtras.pm

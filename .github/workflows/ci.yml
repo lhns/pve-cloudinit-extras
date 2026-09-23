@@ -1,0 +1,149 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build .deb (Debian 13), lintian, contents
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential debhelper lintian >/dev/null
+      - name: dpkg-buildpackage
+        run: |
+          dpkg-buildpackage -us -uc -b
+          mkdir dist && mv ../*.deb dist/
+      - name: lintian
+        run: lintian --fail-on error,warning --info --display-info dist/*.deb
+      - name: dpkg-deb --contents sanity
+        run: sh tests/deb-contents.sh dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+
+  perl:
+    name: Endpoint and generator unit tests (Perl)
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install libpve-common-perl from the Proxmox repository
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null
+          curl -fsSL https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg -o /usr/share/keyrings/proxmox-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie pve-no-subscription" > /etc/apt/sources.list.d/pve.list
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends libpve-common-perl libjson-perl python3-yaml >/dev/null
+      - name: perl -c
+        run: |
+          perl -c src/sbin/pve-cloudinit-extras-patch
+          perl -Isrc/perl -It/lib -c src/perl/PVE/API2/CloudinitExtras.pm
+      - run: prove -v t/
+
+  lifecycle:
+    name: dpkg lifecycle against real pve-manager .debs
+    needs: build
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: deb
+          path: dist
+      - run: bash tests/lifecycle.sh dist/*.deb
+
+  js:
+    name: JS lint and headless GUI test
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: tests/js
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run lint
+      - run: sh fetch-libs.sh
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test gui.spec.js
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gui-test-results
+          path: tests/js/test-results
+
+  e2e:
+    name: End-to-end on nested Proxmox VE 9.2
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: deb
+          path: dist
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || cat /sys/module/kvm_amd/parameters/nested
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends qemu-system-x86 qemu-utils netpbm >/dev/null
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Playwright
+        working-directory: tests/js
+        run: npm ci && npx playwright install --with-deps chromium
+      - uses: actions/cache@v4
+        with:
+          path: ~/e2e/iso
+          key: pve-iso-9.2-1
+      - name: Run
+        run: bash tests/e2e/run.sh dist/*.deb
+      - name: Convert screenshots
+        if: always()
+        run: for f in ~/e2e/artifacts/*.ppm; do [ -f "$f" ] && pnmtopng "$f" > "${f%.ppm}.png" && rm "$f"; done; true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-artifacts
+          path: |
+            ~/e2e/artifacts
+            tests/js/test-results
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, perl, lifecycle, js, e2e]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: deb
+          path: dist
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --notes "Built and tested by CI run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. See README for install instructions."
