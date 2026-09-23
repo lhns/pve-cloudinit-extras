@@ -1,0 +1,33 @@
+name: apt smoke test
+
+# apt update + install --download-only against the real releases/latest/download/ URL:
+# GitHub's redirects to the asset host, and the signature, end to end.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: expected tag (vX.Y.Z); empty accepts any
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      version:
+        description: expected tag (vX.Y.Z); empty accepts any
+        type: string
+        default: ''
+  schedule:
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  apt-smoke:
+    name: apt install from releases/latest/download (Debian 13)
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: sh tests/apt-repo.sh remote https://github.com/lhns/pve-cloudinit-extras/releases/latest/download/ "${VERSION#v}"
