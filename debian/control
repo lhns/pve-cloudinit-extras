@@ -1,0 +1,24 @@
+Source: pve-cloudinit-extras
+Section: admin
+Priority: optional
+Maintainer: Pierre Kisters <pierrekisters@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+
+Package: pve-cloudinit-extras
+Architecture: all
+Depends: pve-manager (>= 9.2), pve-manager (<< 10), libtemplate-perl, ${misc:Depends}
+Description: cicustom and include fields for the Proxmox VE Cloud-Init tab
+ Adds "Custom files" (cicustom) and "Include" (snippet or URL via vendor-data)
+ rows to the VM Cloud-Init panel. Loads a separate JS file through one marker
+ line in index.html.tpl, re-applied by a dpkg trigger after pve-manager
+ upgrades and removed exactly on uninstall.
+
+Package: pve-cloudinit-extras-api
+Architecture: all
+Depends: pve-cloudinit-extras (= ${binary:Version}), pve-manager (>= 9.2), pve-manager (<< 9.3), ${misc:Depends}
+Description: snippet-writer API for pve-cloudinit-extras
+ Adds /nodes/{node}/cloudinit-extras, which writes a fixed-name "#include <url>"
+ snippet per VM. Requires VM.Config.Cloudinit and Datastore.AllocateSpace.
+ Registers itself via two marker lines in PVE/API2/Nodes.pm.

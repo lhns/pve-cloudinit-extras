@@ -1,0 +1,3 @@
+src/js/pve-cloudinit-extras.js usr/share/pve-manager/js/
+src/sbin/pve-cloudinit-extras-patch usr/sbin/
+src/supported usr/share/pve-cloudinit-extras/

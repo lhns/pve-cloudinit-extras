@@ -1,0 +1,3 @@
+# pve-manager versions the patches were tested on: <target> <min> <max-exclusive>
+gui 9.2 9.3
+api 9.2 9.3

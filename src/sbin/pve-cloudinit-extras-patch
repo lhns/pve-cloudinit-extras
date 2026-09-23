@@ -1,0 +1,46 @@
+#!/bin/sh
+# STUB. Usage: pve-cloudinit-extras-patch gui|api apply|remove|status
+# Contract (PLAN.md §4, §5, §8): idempotent, flock'd, never exits non-zero from dpkg hooks,
+# refuses unknown pve-manager versions, removes exactly the marker lines it added.
+set -eu
+
+MARK=pve-cloudinit-extras
+TPL=/usr/share/pve-manager/index.html.tpl
+TPL_ANCHOR='src="/pve2/js/pvemanagerlib.js?ver=[% version %]"></script>'
+NODES=/usr/share/perl5/PVE/API2/Nodes.pm
+STATE=/var/lib/pve-cloudinit-extras
+
+log() { logger -t "$MARK" -- "$*"; mkdir -p "$STATE"; echo "$*" > "$STATE/status-$TARGET"; }
+
+# TODO version_ok: compare `dpkg-query -W -f='${Version}' pve-manager` against src/supported
+#      (dpkg --compare-versions), honour FORCE=1 in /etc/pve-cloudinit-extras.conf.
+# TODO is_stock FILE: md5 of FILE equals its line in /var/lib/dpkg/info/pve-manager.md5sums.
+# TODO restore_from_deb FILE: apt-get download pve-manager=<installed>; dpkg-deb --fsys-tarfile | tar -xO.
+
+TARGET=${1:?gui|api}; ACTION=${2:?apply|remove|status}
+exec 9>/run/lock/$MARK.lock; flock 9
+
+case "$TARGET/$ACTION" in
+    gui/apply)
+        # grep -qF "data-$MARK" "$TPL" && exit 0
+        # version_ok gui || { log "skip: unsupported pve-manager"; exit 0; }
+        # [ "$(grep -cF "$TPL_ANCHOR" "$TPL")" = 1 ] || { log "skip: anchor not found once"; exit 0; }
+        # insert '<script ... data-pve-cloudinit-extras></script>' after anchor into tmp,
+        # perl -MTemplate compile check, mv into place
+        ;;
+    gui/remove)
+        # sed "/data-$MARK/d" -> tmp -> mv; is_stock "$TPL" || restore_from_deb "$TPL" || log "run: apt install --reinstall pve-manager"
+        ;;
+    api/apply)
+        # as gui/apply for $NODES: two lines tagged "# $MARK"; then
+        # perl -e 'use PVE::API2::Nodes' || restore; systemctl reload-or-restart pvedaemon pveproxy
+        ;;
+    api/remove)
+        # sed "/# $MARK\$/d"; is_stock || restore_from_deb; systemctl reload-or-restart pvedaemon pveproxy
+        ;;
+    */status)
+        cat "$STATE/status-$TARGET" 2>/dev/null || echo unknown
+        ;;
+    *) echo "usage: $0 gui|api apply|remove|status" >&2; exit 2 ;;
+esac
+echo "TODO: not implemented" >&2
