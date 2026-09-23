@@ -30,23 +30,27 @@ async function login(page, request) {
 async function openCloudInit(page) {
     await page.goto(`${PVE_URL}/`);
     await page.waitForFunction(() => window.Ext && Ext.ComponentQuery.query('pveResourceTree').length > 0);
-    // the resource tree fills asynchronously: keep selecting until the VM config panel shows
+    // The resource tree and the VM panel's menu fill asynchronously: keep selecting until the
+    // Cloud-Init panel is actually visible.
     await page.waitForFunction(
         (vmid) => {
-            Ext.ComponentQuery.query('pveResourceTree')[0].selectById(`qemu/${vmid}`);
-            return Ext.ComponentQuery.query('*').some((c) => c.$className === 'PVE.qemu.Config');
+            const visible = (c) => c.isVisible(true);
+            const ci = Ext.ComponentQuery.query('pveCiPanel').find(visible);
+            if (ci) {
+                return ci.rstore.getCount() > 0;
+            }
+            const cfg = Ext.ComponentQuery.query('*').find((c) => c.$className === 'PVE.qemu.Config' && visible(c));
+            if (cfg) {
+                cfg.selectById('cloudinit');
+            } else {
+                Ext.ComponentQuery.query('pveResourceTree')[0].selectById(`qemu/${vmid}`);
+            }
+            return false;
         },
         E2E_VMID,
-        { polling: 1000, timeout: 60000 },
+        { polling: 1000, timeout: 90000 },
     );
-    await page.evaluate(() =>
-        Ext.ComponentQuery.query('*').find((c) => c.$className === 'PVE.qemu.Config').selectById('cloudinit'),
-    );
-    await page.waitForFunction(() => {
-        const p = Ext.ComponentQuery.query('pveCiPanel')[0];
-        return p && p.rstore.getCount() > 0;
-    });
-    await page.waitForTimeout(1500); // probe + vendor GET
+    await page.waitForTimeout(2000); // probe + vendor GET
 }
 
 const panelRow = (page, header) => page.locator('.x-grid-row', { hasText: header }).first();

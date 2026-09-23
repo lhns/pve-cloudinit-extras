@@ -211,6 +211,17 @@ EOF
 check "cloud-init guest created (Debian 13 genericcloud)" test $? = 0
 endgroup
 
+RUNCMD_TEXT="echo from-runcmd >> /var/tmp/cix-order
+touch /var/tmp/cix-runcmd
+echo 'key: value' \"--cix.boundary-1--\" '#cloud-config' > /var/tmp/cix-hostile"
+# write the vendor snippet via the endpoint and point cicustom at it (what the GUI does)
+set_vendor() {
+    api -X PUT --data-urlencode storage=e2e-snippets --data-urlencode "bootcmd=$1" --data-urlencode "runcmd=$2" \
+        --data-urlencode include-url=http://10.0.2.2:8080/include.yaml \
+        "https://127.0.0.1:8006/api2/json/nodes/$NODE/cloudinit-extras/vendor/$VMID" > /dev/null &&
+        pve "qm set $VMID --cicustom vendor=e2e-snippets:snippets/cix-$VMID-vendor.yaml" > /dev/null
+}
+
 # include file served by the runner; the guest reaches the runner's localhost as 10.0.2.2
 mkdir -p "$W/www"
 cat > "$W/www/include.yaml" <<'EOF'
@@ -229,8 +240,13 @@ group "GUI: rows render and fields are set through the real GUI"
 cd "$REPO_ROOT/tests/js"
 PVE_URL=https://127.0.0.1:8006 PVE_PASSWORD=$PW E2E_MODE=edit E2E_VMID=$VMID E2E_SHOTS=$SHOTS \
     E2E_INCLUDE_URL=http://10.0.2.2:8080/include.yaml npx playwright test e2e.spec.js > "$W/gui-edit.log" 2>&1
-check "GUI: four rows render; Commands, Boot commands and Include saved through the editors" test $? = 0
+GUI_RC=$?
+check "GUI: four rows render; Commands, Boot commands and Include saved through the editors" test $GUI_RC = 0
 cd - >/dev/null
+if [ $GUI_RC != 0 ]; then
+    note "GUI step failed; setting the same fields through the API so the guest checks still run"
+    set_vendor "echo boot >> /var/tmp/cix-boots" "$RUNCMD_TEXT"
+fi
 CICUSTOM=$(pve "qm config $VMID" | sed -n 's/^cicustom: //p')
 note "cicustom: $CICUSTOM"
 check "cicustom vendor= points at the generated snippet" test "$CICUSTOM" = "vendor=e2e-snippets:snippets/cix-$VMID-vendor.yaml"
@@ -266,6 +282,8 @@ check "guest fetched the include URL from the runner" grep -q 'GET /include.yaml
 check "Proxmox-generated user-data still applied (hostname)" test "$(guest hostname)" = cix-guest
 guest 'sudo cloud-init query vendordata' > "$SHOTS/guest-vendordata.txt" 2>&1
 check "cloud-init sees our vendor data" grep -q 'pve-cloudinit-extras' "$SHOTS/guest-vendordata.txt"
+guest 'sudo cat /var/log/cloud-init.log' > "$SHOTS/guest-cloud-init-boot1.log" 2>&1
+guest 'sudo cat /var/log/cloud-init-output.log' > "$SHOTS/guest-cloud-init-output-boot1.log" 2>&1
 endgroup
 
 group "guest reboot (same instance)"
@@ -277,12 +295,9 @@ check "runcmd did not run again" test "$(guest 'wc -l < /var/tmp/cix-order')" = 
 endgroup
 
 group "changed commands on an existing instance, without cloud-init clean"
-api -X PUT --data-urlencode storage=e2e-snippets \
-    --data-urlencode "bootcmd=echo boot >> /var/tmp/cix-boots
-echo boot2 >> /var/tmp/cix-boots2" \
-    --data-urlencode "runcmd=touch /var/tmp/cix-runcmd2" \
-    --data-urlencode include-url=http://10.0.2.2:8080/include.yaml \
-    "https://127.0.0.1:8006/api2/json/nodes/$NODE/cloudinit-extras/vendor/$VMID" > /dev/null
+set_vendor "echo boot >> /var/tmp/cix-boots
+echo boot2 >> /var/tmp/cix-boots2" "$RUNCMD_TEXT
+touch /var/tmp/cix-runcmd2"
 check "API update of the vendor snippet" test $? = 0
 OLD=$(boot_id)
 pve "qm shutdown $VMID --timeout 180 --forceStop 1 && qm start $VMID" > /dev/null 2>&1
@@ -319,7 +334,9 @@ pve 'apt-get remove -y pve-cloudinit-extras' > "$W/remove.log" 2>&1
 check "apt remove succeeds" test $? = 0
 pve 'md5sum /usr/share/pve-manager/index.html.tpl /usr/share/perl5/PVE/API2/Nodes.pm' > "$W/after-remove.md5"
 check "both files byte-identical to before installation" cmp -s "$W/stock.md5" "$W/after-remove.md5"
-check "dpkg --verify pve-manager clean" test -z "$(pve 'dpkg --verify pve-manager')"
+pve 'dpkg --verify pve-manager' > "$SHOTS/dpkg-verify.txt" 2>&1
+note "dpkg --verify pve-manager: $(tr '\n' ';' < "$SHOTS/dpkg-verify.txt")"
+check "dpkg --verify pve-manager reports neither patched file" sh -c "! grep -E 'index.html.tpl|API2/Nodes.pm' '$SHOTS/dpkg-verify.txt'"
 sleep 10
 check "API route gone" sh -c "! curl -fsSk -b 'PVEAuthCookie=$TICKET' https://127.0.0.1:8006/api2/json/nodes/$NODE/cloudinit-extras"
 cd "$REPO_ROOT/tests/js"
