@@ -81,8 +81,8 @@ cp -r /srv/repo /srv/orig
 sed -i 's/^Maintainer: ./Maintainer: X/' /srv/repo/Packages
 rm /srv/repo/Packages.gz
 cmp -s /srv/repo/Packages /srv/orig/Packages && fail "tampering did nothing"
-rejects "tampered Packages" 'Hash Sum mismatch'
+rejects "tampered Packages" 'Failed to fetch .*/Packages +Hash Sum mismatch'
 
 rm -rf /srv/repo && cp -r /srv/orig /srv/repo && rm /srv/repo/Release.gpg
 sed -i 's/^Origin: p/Origin: X/' /srv/repo/InRelease
-rejects "tampered InRelease" 'The following signatures were invalid|BADSIG|is not signed'
+rejects "tampered InRelease" 'OpenPGP signature verification failed: .* InRelease: .*manipulated'
