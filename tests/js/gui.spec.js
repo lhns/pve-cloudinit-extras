@@ -166,7 +166,9 @@ const openEditor = async (page, header) => {
     return page.locator('.x-window').last();
 };
 const setMode = (page, mode) =>
-    page.evaluate((m) => Ext.ComponentQuery.query('cixVendorEdit radiogroup')[0].setValue({ cix_mode: m }), mode);
+    page.evaluate((m) => {
+        Ext.ComponentQuery.query('cixVendorEdit radiogroup')[0].setValue({ cix_mode: m });
+    }, mode);
 const clickOk = (win) => win.getByRole('button', { name: 'OK' }).click();
 
 test('rows render next to the stock rows, values from the generated file', async ({ page }) => {

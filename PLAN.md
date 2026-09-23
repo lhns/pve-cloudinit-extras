@@ -32,8 +32,9 @@ points at a file with its own `runcmd`/`bootcmd`. The editors warn when `user=` 
   instance until `cloud-init clean`. The NoCloud `instance-id` is `sha1(user-data . network-data)`
   (`nocloud_gen_metadata`), so a vendor-data change does not make a new instance.
 - `bootcmd`: every boot, early in cloud-init's init stage; the network may not be up.
-- Proxmox rebuilds the cloud-init drive on VM start, not on a guest-initiated reboot. Whether a
-  changed `bootcmd` is picked up on an existing instance is measured by the e2e test; see README.
+- Proxmox rebuilds the cloud-init drive on VM start, not on a guest-initiated reboot. Measured
+  (e2e): a changed `bootcmd` runs after a stop/start without `cloud-init clean`, not after an
+  in-guest reboot; a changed `runcmd` does not run.
 
 ## 2. Generated vendor file
 

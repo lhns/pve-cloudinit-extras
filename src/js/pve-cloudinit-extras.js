@@ -45,7 +45,8 @@
             ),
             bootcmd: gettext(
                 'One command per line (cloud-init bootcmd). Runs on every boot, early, before most' +
-                    ' of cloud-init; do not rely on the network. Changes apply from the next VM start.',
+                    ' of cloud-init; do not rely on the network. Changes apply from the next VM start in' +
+                    ' Proxmox, not from a reboot inside the guest.',
             ),
             include: gettext(
                 'One more cloud-init file, applied as vendor data under the generated user data. A' +

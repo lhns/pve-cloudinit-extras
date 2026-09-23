@@ -72,7 +72,7 @@ test('Cloud-Init tab on a real PVE', async ({ page, request }) => {
         await expect(page.locator('.x-grid-row', { hasText: 'Boot commands' })).toHaveCount(0);
         await expect(page.locator('.x-grid-row', { hasText: 'Custom files' })).toHaveCount(0);
         const js = await request.get(`${PVE_URL}/pve2/js/pve-cloudinit-extras.js`);
-        expect(js.status()).toBe(404);
+        expect(js.ok()).toBe(false); // pveproxy answers 500 for a missing file
         await page.screenshot({ path: `${SHOTS}/e2e-stock.png` });
         expect(errors).toEqual([]);
         return;
@@ -89,7 +89,9 @@ test('Cloud-Init tab on a real PVE', async ({ page, request }) => {
 
         await panelRow(page, 'Include').dblclick();
         const win = page.locator('.x-window').last();
-        await page.evaluate(() => Ext.ComponentQuery.query('cixVendorEdit radiogroup')[0].setValue({ cix_mode: 'url' }));
+        await page.evaluate(() => {
+            Ext.ComponentQuery.query('cixVendorEdit radiogroup')[0].setValue({ cix_mode: 'url' });
+        });
         await win.locator('input[name=cix_url]').fill(E2E_INCLUDE_URL);
         await win.getByRole('button', { name: 'OK' }).click();
         await expect(win).toBeHidden({ timeout: 20000 });

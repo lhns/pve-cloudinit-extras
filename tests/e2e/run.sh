@@ -349,7 +349,7 @@ check "API route gone" sh -c "! curl -fsSk -b 'PVEAuthCookie=$TICKET' https://12
 cd "$REPO_ROOT/tests/js"
 PVE_URL=https://127.0.0.1:8006 PVE_PASSWORD=$PW E2E_MODE=stock E2E_VMID=$VMID E2E_SHOTS=$SHOTS \
     npx playwright test e2e.spec.js > "$W/gui-stock.log" 2>&1
-check "GUI: stock Cloud-Init tab without our rows, JS 404, no errors" test $? = 0
+check "GUI: stock Cloud-Init tab without our rows, JS no longer served, no errors" test $? = 0
 cd - >/dev/null
 check "generated snippet left in place" pve "test -f /var/lib/e2e-snippets/snippets/cix-$VMID-vendor.yaml"
 pve "qm start $VMID" > /dev/null 2>&1
