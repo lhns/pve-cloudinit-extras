@@ -1,5 +1,6 @@
 # pve-cloudinit-extras
-n[![CI](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml/badge.svg)](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml)
+
+[![CI](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml/badge.svg)](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml)
 
 Adds four rows to the Proxmox VE 9.2 Cloud-Init tab (VM → Cloud-Init):
 
@@ -25,11 +26,6 @@ endpoint writes that snippet, because the stock API cannot write snippets.
   Shutdown then Start), without `cloud-init clean`: Proxmox rebuilds the cloud-init drive then and
   NoCloud re-reads it on every boot. A reboot from inside the guest keeps the old drive, so it
   runs the old list.
-
-Measured by the end-to-end test (Debian 13 cloud image): the Proxmox-generated user data does
-**not** override our `runcmd`; the URL include and our commands both run, include first; a
-changed `bootcmd` ran after a stop/start but not after an in-guest reboot; a changed `runcmd`
-did not run again.
 - **Include** is applied at first boot, like Commands. A URL is fetched **by the guest**, never by
   the host. A snippet alone is referenced directly; combined with commands it is copied into the
   generated file (re-copied whenever a field is saved).
@@ -38,6 +34,11 @@ did not run again.
   data never sets them, so it does not interfere.
 - Commands are passed as JSON strings inside the cloud-config, so no text can add keys; the
   snippet parts are base64. Control characters are rejected.
+
+Measured by the end-to-end test (Debian 13 cloud image): the Proxmox-generated user data does
+**not** override our `runcmd`; the URL include and our commands both run, include first; a
+changed `bootcmd` ran after a stop/start but not after an in-guest reboot; a changed `runcmd`
+did not run again.
 
 ## Install
 
