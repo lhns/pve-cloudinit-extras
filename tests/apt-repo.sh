@@ -36,7 +36,8 @@ case $MODE in
   *) fail "mode $MODE" ;;
 esac
 echo "signing key: $(gpg --show-keys --with-colons "$KEYRING" | awk -F: '/^fpr/{print $10; exit}')"
-if [ -f keys/pve-cloudinit-extras.asc ]; then
+# Local runs may use a throwaway key; the apt-repo CI job checks the real one.
+if [ "$MODE" = remote ]; then
   [ "$(gpg --show-keys --with-colons "$KEYRING" | awk -F: '/^fpr/{print $10; exit}')" = \
     "$(gpg --show-keys --with-colons keys/pve-cloudinit-extras.asc | awk -F: '/^fpr/{print $10; exit}')" ] \
     || fail "published key is not keys/pve-cloudinit-extras.asc"

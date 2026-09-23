@@ -57,6 +57,8 @@ apt update && apt install pve-cloudinit-extras
 pve-cloudinit-extras-patch status
 ```
 
+The signing key is [`keys/pve-cloudinit-extras.asc`](keys/pve-cloudinit-extras.asc), fingerprint
+`D0EBAA806BC8A595908FFC82B4D623393311B74A` (`gpg --show-keys /usr/share/keyrings/pve-cloudinit-extras.gpg`).
 Updates arrive with the normal `apt full-upgrade`. Only the latest release is installable this
 way; older `.deb`s stay attached to their releases (`apt install ./pve-cloudinit-extras_<version>_all.deb`).
 
