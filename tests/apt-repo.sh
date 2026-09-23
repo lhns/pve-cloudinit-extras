@@ -71,7 +71,8 @@ echo "OK: pve-cloudinit-extras $CAND from $URL"
 rejects() {  # rejects WHAT PATTERN
   rm -rf /var/lib/apt/lists/127.0.0.1* /var/lib/apt/lists/partial/127.0.0.1*
   if apt-get update --error-on=any >/tmp/apt.log 2>&1; then cat /tmp/apt.log; fail "apt accepted $1"; fi
-  grep -Em1 "$2" /tmp/apt.log || { cat /tmp/apt.log; fail "$1: expected /$2/"; }
+  grep -v -e "^Hit:" -e "^Get:" -e "^Reading" /tmp/apt.log | sed "s/^/  | /"
+  grep -Eq "$2" /tmp/apt.log || { cat /tmp/apt.log; fail "$1: expected /$2/"; }
   if apt-cache policy pve-cloudinit-extras | grep -q 127.0.0.1; then fail "$1: index was used"; fi
   echo "OK: apt rejects $1"
 }
