@@ -129,21 +129,105 @@ jobs:
             ~/e2e/artifacts
             tests/js/test-results
 
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+  apt-repo:
+    name: Build signed flat apt repository
+    needs: build
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: deb
+          path: dist
+      - run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends apt-utils gpg gpg-agent gpgv >/dev/null
+      # The real key signs only on main and tags; PRs get a throwaway key. A tag never
+      # publishes without the real key, nor with one that differs from keys/.
+      - name: Import signing key
+        id: key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          TRUSTED: ${{ github.event_name != 'pull_request' }}
+          TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        run: |
+          if [ "$TRUSTED" = true ] && [ -n "$APT_SIGNING_KEY" ]; then
+            printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+            REAL=true
+          elif [ "$TAG" = true ]; then
+            echo "::error::secret APT_SIGNING_KEY is not set; refusing to publish unsigned"; exit 1
+          else
+            echo "::warning::signing with a throwaway key (PR, or APT_SIGNING_KEY not set)"
+            gpg --batch --passphrase '' --quick-gen-key "throwaway CI test key" ed25519 sign 1d
+            REAL=false
+          fi
+          [ "$(gpg --list-secret-keys --with-colons | grep -c '^sec')" = 1 ] || { echo "::error::expected exactly one secret key"; exit 1; }
+          FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/{print $10; exit}')
+          echo "signing key $FPR"
+          echo "fpr=$FPR" >> "$GITHUB_OUTPUT"
+          if [ "$REAL" = true ]; then
+            if [ -f keys/pve-cloudinit-extras.asc ]; then
+              COMMITTED=$(gpg --show-keys --with-colons keys/pve-cloudinit-extras.asc | awk -F: '/^fpr/{print $10; exit}')
+              [ "$COMMITTED" = "$FPR" ] || { echo "::error::keys/pve-cloudinit-extras.asc is $COMMITTED, the secret is $FPR"; exit 1; }
+            elif [ "$TAG" = true ]; then
+              echo "::error::keys/pve-cloudinit-extras.asc is missing"; exit 1
+            fi
+          fi
+      - run: sh ci/build-apt-repo.sh repo "${{ steps.key.outputs.fpr }}" dist/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apt-repo
+          path: repo
+
+  apt-test:
+    name: apt install from the flat repository (Debian 13)
+    needs: apt-repo
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: apt-repo
+          path: repo
+      - run: sh tests/apt-repo.sh local repo
+
   release:
     name: GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, perl, lifecycle, js, e2e]
+    needs: [build, perl, lifecycle, js, e2e, actionlint, apt-repo, apt-test]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v5
         with:
-          name: deb
-          path: dist
+          name: apt-repo
+          path: repo
+      - name: Tag matches package version
+        run: |
+          V=$(dpkg-deb -f repo/*.deb Version)
+          [ "$GITHUB_REF_NAME" = "v$V" ] || { echo "::error::tag $GITHUB_REF_NAME, package $V"; exit 1; }
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/*.deb --repo "$GITHUB_REPOSITORY" \
+          gh release create "$GITHUB_REF_NAME" repo/* --repo "$GITHUB_REPOSITORY" --latest \
             --title "$GITHUB_REF_NAME" --notes "Built and tested by CI run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. See README for install instructions."
+
+  apt-smoke:
+    name: apt install from the published release
+    needs: release
+    uses: ./.github/workflows/apt-smoke.yml
+    with:
+      version: ${{ github.ref_name }}

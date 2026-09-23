@@ -40,14 +40,27 @@ Measured by the end-to-end test (Debian 13 cloud image): the Proxmox-generated u
 changed `bootcmd` ran after a stop/start but not after an in-guest reboot; a changed `runcmd`
 did not run again.
 
-## Install
+## Install via apt
 
 On **every** node of the cluster:
 
 ```sh
-apt install ./pve-cloudinit-extras_0.1.0_all.deb
+curl -fsSL https://github.com/lhns/pve-cloudinit-extras/releases/latest/download/pve-cloudinit-extras.gpg \
+  -o /usr/share/keyrings/pve-cloudinit-extras.gpg
+cat > /etc/apt/sources.list.d/pve-cloudinit-extras.sources <<'EOF'
+Types: deb
+URIs: https://github.com/lhns/pve-cloudinit-extras/releases/latest/download/
+Suites: ./
+Signed-By: /usr/share/keyrings/pve-cloudinit-extras.gpg
+EOF
+apt update && apt install pve-cloudinit-extras
 pve-cloudinit-extras-patch status
 ```
+
+The signing key is [`keys/pve-cloudinit-extras.asc`](keys/pve-cloudinit-extras.asc), fingerprint
+`D0EBAA806BC8A595908FFC82B4D623393311B74A` (`gpg --show-keys /usr/share/keyrings/pve-cloudinit-extras.gpg`).
+Updates arrive with the normal `apt full-upgrade`. Only the latest release is installable this
+way; older `.deb`s stay attached to their releases (`apt install ./pve-cloudinit-extras_<version>_all.deb`).
 
 Reload the browser tab. Snippets must already be enabled on some storage
 (Datacenter → Storage → Edit → Content: Snippets); the package never changes storage config.
@@ -128,6 +141,7 @@ a VM, add a `dir` storage with snippets content, install the `.deb`, and create 
 | lifecycle | real pve-manager `.deb`s in a Debian 13 container: install, reinstall, upgrade, pve-manager reinstall/upgrade/downgrade (trigger), unsupported version, missing/duplicated anchors, concurrency, remove/purge byte-identical, restore from `.deb` | `tests/lifecycle.sh` |
 | GUI | ESLint; headless Chromium with the real ExtJS, `proxmoxlib.js` and `pvemanagerlib.js` against a mocked API | `tests/js/gui.spec.js` |
 | e2e | nested PVE 9.2 from the ISO, real API/GUI, cloud-init guest | `tests/e2e/run.sh` |
+| apt | signed flat repository over HTTP, installed with signature checks; tampered `Packages` and `InRelease` rejected; after each release and weekly, the real `releases/latest/download/` URL | `tests/apt-repo.sh` |
 
 ## License
 
