@@ -70,6 +70,20 @@ f.readline(); f.write('{"execute":"qmp_capabilities"}\n'); f.flush(); f.readline
 f.write(sys.argv[2] + '\n'); f.flush(); print(f.readline())
 PY
 }
+# wait until the guest runs a boot other than $1 and cloud-init has finished it
+boot_id() { guest 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null; }
+wait_boot() {
+    local old=$1 d=$2 end=$((SECONDS + BOOT_T)) id
+    while :; do
+        id=$(boot_id)
+        [ -n "$id" ] && [ "$id" != "$old" ] && break
+        [ $SECONDS -ge $end ] && { nok "timeout after ${BOOT_T}s: $d"; return 1; }
+        sleep 10
+    done
+    ok "$d"
+    guest 'cloud-init status --wait >/dev/null 2>&1; true'
+    check "$d: cloud-init finished" guest 'test -f /var/lib/cloud/instance/boot-finished'
+}
 screenshot() { qmp "$W/qmp.sock" "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"$SHOTS/$1.ppm\"}}" >/dev/null 2>&1; }
 
 # ------------------------------------------------------------------ 1. install PVE
@@ -237,11 +251,11 @@ endgroup
 
 # ------------------------------------------------------------------ guest behaviour
 group "guest first boot"
+check "host did not fetch the include URL while saving (no request before the guest ran)" test ! -s "$W/http.log" -o "$(grep -c 'GET /include.yaml' "$W/http.log")" = 0
 pve "qm start $VMID" > "$W/qm-start.log" 2>&1
 check "VM starts with the generated vendor data" test $? = 0
 BOOT_T=$([ $KVM_GUEST = 1 ] && echo 900 || echo 2400)
-wait_for $BOOT_T "guest reachable over SSH with Proxmox-generated user and key" guest true
-wait_for 1200 "cloud-init finished" guest 'test -f /var/lib/cloud/instance/boot-finished'
+wait_boot none "first boot: guest reachable over SSH with the Proxmox-generated user and key"
 guest 'cloud-init status --long' > "$W/guest-status.log" 2>&1
 check "runcmd from Commands ran (Proxmox user-data does not override vendor runcmd)" guest 'test -f /var/tmp/cix-runcmd'
 check "URL include applied (write_files from the included file)" guest 'grep -qx included /var/tmp/cix-include'
@@ -249,16 +263,15 @@ check "runcmd lists merged: include first, then Commands" test "$(guest 'cat /va
 check "hostile command text reached the shell verbatim" test "$(guest 'cat /var/tmp/cix-hostile')" = "key: value --cix.boundary-1-- #cloud-config"
 check "bootcmd ran on first boot" test "$(guest 'wc -l < /var/tmp/cix-boots')" = 1
 check "guest fetched the include URL from the runner" grep -q 'GET /include.yaml' "$W/http.log"
-check "host never fetched the include URL (one request, from the guest)" test "$(grep -c 'GET /include.yaml' "$W/http.log")" = 1
 check "Proxmox-generated user-data still applied (hostname)" test "$(guest hostname)" = cix-guest
 guest 'sudo cloud-init query vendordata' > "$SHOTS/guest-vendordata.txt" 2>&1
 check "cloud-init sees our vendor data" grep -q 'pve-cloudinit-extras' "$SHOTS/guest-vendordata.txt"
 endgroup
 
 group "guest reboot (same instance)"
+OLD=$(boot_id)
 guest 'sudo systemctl reboot' >/dev/null 2>&1
-sleep 20
-wait_for $BOOT_T "guest back after reboot" guest 'test -f /var/lib/cloud/instance/boot-finished'
+wait_boot "$OLD" "guest rebooted from inside"
 check "bootcmd ran again on reboot (2 lines)" test "$(guest 'wc -l < /var/tmp/cix-boots')" = 2
 check "runcmd did not run again" test "$(guest 'wc -l < /var/tmp/cix-order')" = 2
 endgroup
@@ -271,16 +284,16 @@ echo boot2 >> /var/tmp/cix-boots2" \
     --data-urlencode include-url=http://10.0.2.2:8080/include.yaml \
     "https://127.0.0.1:8006/api2/json/nodes/$NODE/cloudinit-extras/vendor/$VMID" > /dev/null
 check "API update of the vendor snippet" test $? = 0
-pve "qm shutdown $VMID --timeout 300 && qm start $VMID" > /dev/null 2>&1
-sleep 20
-wait_for $BOOT_T "guest back after VM stop/start" guest 'test -f /var/lib/cloud/instance/boot-finished'
+OLD=$(boot_id)
+pve "qm shutdown $VMID --timeout 180 --forceStop 1 && qm start $VMID" > /dev/null 2>&1
+wait_boot "$OLD" "guest back after VM stop/start"
 BOOT2=$(guest 'cat /var/tmp/cix-boots2 2>/dev/null | wc -l')
 RUN2=$(guest 'test -f /var/tmp/cix-runcmd2 && echo yes || echo no')
 note "after changing vendor data and a VM stop/start: new bootcmd ran=$BOOT2 time(s), new runcmd ran=$RUN2"
 check "old bootcmd line still runs every boot (3 lines)" test "$(guest 'wc -l < /var/tmp/cix-boots')" = 3
 echo "BOOTCMD_CHANGE_APPLIED=$BOOT2" >> "$SHOTS/findings.env"
 echo "RUNCMD_CHANGE_APPLIED=$RUN2" >> "$SHOTS/findings.env"
-pve "qm shutdown $VMID --timeout 300" > /dev/null 2>&1
+pve "qm shutdown $VMID --timeout 180 --forceStop 1" > /dev/null 2>&1
 endgroup
 
 # ------------------------------------------------------------------ 3. upgrade and uninstall

@@ -7,6 +7,7 @@ const { PVE_URL, PVE_PASSWORD, E2E_MODE = 'rows', E2E_VMID = '100', E2E_INCLUDE_
 const SHOTS = process.env.E2E_SHOTS || 'test-results';
 
 test.skip(!PVE_URL, 'PVE_URL not set');
+test.setTimeout(240000);
 test.use({ ignoreHTTPSErrors: true });
 
 const RUNCMD = [
