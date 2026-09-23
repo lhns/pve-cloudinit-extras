@@ -24,6 +24,9 @@ async function login(page) {
     await page.locator('input[name=password]').fill(PVE_PASSWORD);
     await page.getByRole('button', { name: 'Login' }).click();
     await page.locator('.x-tree-node-text', { hasText: 'Datacenter' }).first().waitFor({ timeout: 60000 });
+    // the "No valid subscription" notice of a no-subscription install
+    const notice = page.locator('.x-message-box').getByRole('button', { name: 'OK' });
+    await notice.waitFor({ timeout: 10000 }).then(() => notice.click(), () => {});
 }
 
 async function openCloudInit(page) {
