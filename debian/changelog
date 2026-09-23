@@ -1,3 +1,9 @@
+pve-cloudinit-extras (0.1.1) trixie; urgency=medium
+
+  * Publish a signed apt repository with each GitHub release.
+
+ -- Pierre Kisters <pierrekisters@gmail.com>  Thu, 24 Sep 2026 00:56:14 +0200
+
 pve-cloudinit-extras (0.1.0) trixie; urgency=medium
 
   * Initial release.
