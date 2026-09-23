@@ -30,8 +30,8 @@ async function login(page) {
 }
 
 async function openCloudInit(page) {
-    // what a user does: click the VM in the resource tree, then "Cloud-Init" in its menu
-    await page.locator('.x-tree-node-text', { hasText: `${E2E_VMID} (` }).first().click({ timeout: 60000 });
+    // what a user does: open the VM from the Datacenter search list, then "Cloud-Init" in its menu
+    await page.locator('.x-grid-row', { hasText: `${E2E_VMID} (` }).first().dblclick({ timeout: 60000 });
     await page.locator('.x-treelist-item-text', { hasText: /^Cloud-Init$/ }).first().click({ timeout: 60000 });
     await page.waitForFunction(
         () => {
