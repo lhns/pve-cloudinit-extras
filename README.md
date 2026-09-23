@@ -1,4 +1,5 @@
 # pve-cloudinit-extras
+n[![CI](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml/badge.svg)](https://github.com/lhns/pve-cloudinit-extras/actions/workflows/ci.yml)
 
 Adds four rows to the Proxmox VE 9.2 Cloud-Init tab (VM → Cloud-Init):
 
