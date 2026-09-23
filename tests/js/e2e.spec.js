@@ -29,26 +29,16 @@ async function login(page, request) {
 
 async function openCloudInit(page) {
     await page.goto(`${PVE_URL}/`);
-    await page.waitForFunction(() => window.Ext && Ext.ComponentQuery.query('pveResourceTree').length > 0);
-    // The resource tree and the VM panel's menu fill asynchronously: keep selecting until the
-    // Cloud-Init panel is actually visible.
+    // what a user does: click the VM in the resource tree, then "Cloud-Init" in its menu
+    await page.locator('.x-tree-node-text', { hasText: `${E2E_VMID} (` }).first().click({ timeout: 60000 });
+    await page.locator('.x-treelist-item-text', { hasText: /^Cloud-Init$/ }).first().click({ timeout: 60000 });
     await page.waitForFunction(
-        (vmid) => {
-            const visible = (c) => c.isVisible(true);
-            const ci = Ext.ComponentQuery.query('pveCiPanel').find(visible);
-            if (ci) {
-                return ci.rstore.getCount() > 0;
-            }
-            const cfg = Ext.ComponentQuery.query('*').find((c) => c.$className === 'PVE.qemu.Config' && visible(c));
-            if (cfg) {
-                cfg.selectById('cloudinit');
-            } else {
-                Ext.ComponentQuery.query('pveResourceTree')[0].selectById(`qemu/${vmid}`);
-            }
-            return false;
+        () => {
+            const p = Ext.ComponentQuery.query('pveCiPanel').find((c) => c.isVisible(true));
+            return p && p.rstore.getCount() > 0;
         },
-        E2E_VMID,
-        { polling: 1000, timeout: 90000 },
+        null,
+        { timeout: 60000 },
     );
     await page.waitForTimeout(2000); // probe + vendor GET
 }
@@ -66,6 +56,8 @@ async function editText(page, header, text) {
 test('Cloud-Init tab on a real PVE', async ({ page, request }) => {
     const errors = [];
     page.on('pageerror', (e) => errors.push(e.stack));
+    page.on('pageerror', (e) => console.log('pageerror', e.stack));
+    page.on('console', (m) => m.type() !== 'log' && console.log('console', m.type(), m.text()));
     const warnings = [];
     page.on('console', (m) => m.type() === 'warning' && warnings.push(m.text()));
     await login(page, request);

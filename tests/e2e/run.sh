@@ -36,7 +36,8 @@ pve() { ssh "${SSH_OPTS[@]}" -p 2222 root@127.0.0.1 "$@"; }
 pve_put() { scp "${SSH_OPTS[@]}" -P 2222 "$1" "root@127.0.0.1:$2"; }
 pve_get() { scp "${SSH_OPTS[@]}" -P 2222 "root@127.0.0.1:$1" "$2"; }
 # run in the guest, via the PVE host (same bridge)
-guest() { pve ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -i /root/.ssh/e2e "debian@$GUEST_IP" "$@"; }
+# (the command is quoted once more so redirections and pipes run in the guest, not on the host)
+guest() { pve "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=10 -i /root/.ssh/e2e debian@$GUEST_IP $(printf '%q' "$*")"; }
 api() { curl -fsSk -b "PVEAuthCookie=$TICKET" -H "CSRFPreventionToken: $CSRF" "$@"; }
 
 finish() {
