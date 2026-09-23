@@ -1,3 +1,6 @@
 src/js/pve-cloudinit-extras.js usr/share/pve-manager/js/
+src/perl/PVE/API2/CloudinitExtras.pm usr/share/perl5/PVE/API2/
+src/perl/PVE/CloudinitExtras/Vendor.pm usr/share/perl5/PVE/CloudinitExtras/
+src/sbin/pve-cloudinit-extras usr/sbin/
 src/sbin/pve-cloudinit-extras-patch usr/sbin/
 src/supported usr/share/pve-cloudinit-extras/

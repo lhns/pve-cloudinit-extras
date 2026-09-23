@@ -1,9 +1,10 @@
 #!/bin/sh
-# Never fail dpkg: an unpatchable pve-manager leaves the GUI stock.
+# Never fail dpkg: an unpatchable pve-manager leaves the GUI and API stock.
 set -e
 case "$1" in
     configure|triggered)
         pve-cloudinit-extras-patch gui apply || true
+        pve-cloudinit-extras-patch api apply || true
         ;;
 esac
 #DEBHELPER#

@@ -4,248 +4,301 @@ Status: **plan only**. Nothing is built or installed.
 
 Facts about the target cluster were read (read-only) during planning and are not recorded here.
 
-## 1. What the two fields mean
+## 1. The three fields
 
-Candidate readings of "the options for the cloud init command and also an option to include
-one further file from file/snippet or url":
+Confirmed by the user:
 
-| # | field 1 | field 2 |
+| row | meaning | cloud-init slot |
 | --- | --- | --- |
-| A | **`cicustom` editor**: pick snippets for user / network / meta | **Include**: one extra file, either an existing snippet or a URL, merged *on top of* the Proxmox-generated config |
-| B | **Custom commands**: a textarea of `runcmd` lines | as A |
-| C | a raw user-data editor (full YAML) | as A |
+| **Custom files** | edit `cicustom` `user` / `network` / `meta` | as chosen |
+| **Commands** | one command per line, run as `runcmd` | `vendor=` (generated file) |
+| **Include** | one more file: an existing snippet or a URL | `vendor=` (the snippet itself, or the generated file) |
 
-**Recommended: A.** It maps 1:1 to the `qm set --cicustom` command the user cited. It needs no
-backend, and field 2 covers "further file". B and C both need the GUI to *write* snippet
-content. Once the backend from §6 exists, B costs little: a second managed file, rendered as a
-`#cloud-config` with `runcmd`. That makes it a v2 option, not a separate design.
-
-**The key design point:** `cicustom user=` *replaces* the whole generated user-data (user,
+**Why vendor-data:** `cicustom user=` *replaces* the whole generated user-data (user,
 password, SSH keys, hostname, `package_upgrade`; see `cloudinit_userdata` in
-`PVE/QemuServer/Cloudinit.pm`). An "include one more file" field must therefore **not** use the
-`user=` slot. It uses **`vendor=`**. qemu-server leaves vendor-data empty by default (`$vendor_data = ''`).
-cloud-init merges vendor-data *under* user-data, so the Proxmox-generated user/keys/IP config
-stays intact and the included file adds to it.
+`PVE/QemuServer/Cloudinit.pm`). qemu-server leaves vendor-data empty by default. cloud-init
+merges it *under* user-data, so Commands and Include add to the Proxmox config without
+displacing it.
 
-- Include = **snippet**: set `cicustom vendor=<storage>:snippets/<file>`. This goes through the existing API.
-- Include = **URL**: write a managed snippet `cix-<vmid>-include.yaml` containing
-  `#include\n<url>\n`, then set `vendor=` to it. The **guest** fetches the URL at boot.
+**Proxmox's generated user-data never sets `runcmd`, `bootcmd` or `write_files`.** This was checked
+in qemu-server 9.2.4: `cloudinit_userdata` emits only `hostname`, `manage_etc_hosts`, `fqdn`,
+`user`, `disable_root`, `password`, `ssh_authorized_keys`, `chpasswd`, `users` and `package_upgrade`.
+A grep over `PVE/QemuServer*` and `PVE/API2/Qemu.pm` finds no `runcmd`/`bootcmd`/`write_files`.
 
-Field 1 therefore edits `user`/`network`/`meta`, and field 2 owns `vendor`. The field 1 editor
-shows `vendor` read-only as "managed by Include".
+Merge rules
+([vendordata](https://docs.cloud-init.io/en/latest/explanation/vendordata.html),
+[merging](https://docs.cloud-init.io/en/latest/reference/merging.html)):
 
-## 2. GUI design
+- "User-supplied cloud-config is merged over cloud-config from vendor-data", and merging is **not** done
+  *across* config types. A user-data `runcmd` would therefore **replace** ours wholesale.
+- With stock generated user-data this never happens, and **our commands survive**.
+- It does happen if the VM also sets `cicustom user=` to a snippet that defines `runcmd`, or
+  sets `vendor_data: {enabled: false}`. The Commands editor warns when `user=` is set.
+  This is a must-test item (§9).
+
+**Semantics, stated in the plan and in the GUI help text:** `runcmd` runs **once per
+instance, at first boot**. Changing Commands or Include on an existing VM has **no effect** until
+`cloud-init clean` in the guest or a new instance. There is a further catch: the NoCloud `instance-id` is
+`sha1(user-data . network-data)` only (`nocloud_gen_metadata`), so a vendor-data change does not
+even make a new instance.
+
+## 2. Generated vendor file
+
+The file is one per VM, with a fixed name: `<storage>:snippets/cix-<vmid>-vendor.yaml`.
+
+[Vendor-data "is handled exactly like user-data … can supply multi-part input"](https://docs.cloud-init.io/en/latest/explanation/vendordata.html).
+The generated file is therefore always a **MIME multipart** document, even for a single part, so it has one
+format to parse and one header to recognise:
+
+```
+Content-Type: multipart/mixed; boundary="cix-<random>"
+MIME-Version: 1.0
+X-Managed-By: pve-cloudinit-extras/1          <- "our header"; overwrite/delete only if present
+
+--cix-<random>
+Content-Type: text/x-include-url              <- URL include
+Content-Transfer-Encoding: base64
+    base64("https://example/x.yaml\n")
+--cix-<random>
+Content-Type: text/plain                      <- snippet include, inlined copy
+Content-Transfer-Encoding: base64
+X-PVE-Source: shared:snippets/foo.yaml
+    base64(<snippet content>)
+--cix-<random>
+Content-Type: text/cloud-config               <- Commands, always the LAST part
+Content-Transfer-Encoding: base64
+    base64('#cloud-config\n{"merge_how":[{"name":"list","settings":["append"]},{"name":"dict","settings":["no_replace","recurse_list"]}],"runcmd":["cmd 1","cmd 2"]}\n')
+--cix-<random>--
+```
+
+Why each part looks like this:
+- `text/x-include-url`: cloud-init fetches each non-`#` line and processes the result recursively
+  (`_do_include` in [`cloudinit/user_data.py`](https://github.com/canonical/cloud-init/blob/main/cloudinit/user_data.py)).
+  The **guest** fetches the URL. The host never does.
+- Snippet inlined as `text/plain`: cloud-init content-sniffs `text/plain` parts (`TYPE_NEEDED`
+  → `type_from_starts_with`), so a `#cloud-config`, `#!` script or `#include` snippet each works
+  unchanged. The guest cannot reach a snippet, so the snippet has to be inlined. That makes it a **snapshot**: the file is
+  regenerated whenever Commands or Include is saved, and the editor offers "re-read snippet".
+- The Commands `merge_how` is the documented recipe for appending `runcmd` across parts
+  ([merging](https://docs.cloud-init.io/en/latest/reference/merging.html)). It keeps the included file's own
+  `runcmd`, and the Commands part runs after it.
+- **Injection-safe:**
+  - The cloud-config body is **JSON** (a YAML subset), built with Perl `JSON->canonical->encode`.
+  - User text only ever becomes JSON string values, so it cannot add keys.
+  - All parts are base64 encoded, so no content can collide with the boundary or forge headers.
+- Command validation:
+  - Split on `\n`, drop blank lines, at most 200 lines of at most 4096 bytes each.
+  - Reject C0/DEL control chars and invalid UTF-8.
+  - Each line runs via `sh -c`, as for any string `runcmd` item.
+  - The whole file must be under 1 MiB, qemu-server's per-snippet read cap.
+
+| Commands | Include | result |
+| --- | --- | --- |
+| – | – | delete the managed file; clear `vendor=` |
+| – | snippet | `vendor=<that snippet>` directly (live, no copy); delete the managed file |
+| – | URL | managed file: include-url part |
+| set | – | managed file: cloud-config part |
+| set | URL | managed file: include-url + cloud-config |
+| set | snippet | managed file: inlined snippet + cloud-config |
+
+If `vendor=` points at a snippet we don't manage, and the user sets Commands without choosing an
+Include, the editor asks: "Keep `<volid>` as the Include?"
+
+## 3. GUI design
 
 The panel is `PVE.qemu.CloudInit` (xtype `pveCiPanel`, extends
 `Proxmox.grid.PendingObjectGrid`). It is a key/value grid built from `me.rows`, with
-Edit/Remove/Regenerate Image buttons. Pending values are shown the same way as for the other rows.
+Edit/Remove/Regenerate Image buttons.
 
-Two new rows, styled like the existing ones:
+Three new rows, styled like the existing ones:
 
-| row | icon | value shown | editor |
+| row | icon | value shown | editor (`proxmoxWindowEdit`) |
 | --- | --- | --- | --- |
-| **Custom files** (`cicustom`) | `fa-file-code-o` | `user=…, network=…` or "none" | `proxmoxWindowEdit` with three `pveStorageSelector` (`storageContent: 'snippets'`) + `pveFileSelector` pairs, each clearable. Warning text under `user`: "replaces the generated user, password, SSH keys" |
-| **Include** (virtual, derived from `cicustom.vendor`) | `fa-plus-square` | snippet volid, or the URL of a managed include, or "none" | radiogroup *None / Snippet / URL*; snippet mode uses the same selectors; URL mode has a `proxmoxtextfield` (http/https only) plus a storage selector for where the pointer file lives |
+| **Custom files** (`cicustom`) | `fa-file-code-o` | `user=…, network=…` or "none" | `user`/`network`/`meta`: `pveStorageSelector` (`storageContent: 'snippets'`) + `pveFileSelector` each. Warning under `user`: "replaces the generated user, password, SSH keys, and overrides Commands' `runcmd` if it has one". `vendor` is shown read-only when managed |
+| **Commands** (virtual) | `fa-terminal` | first command + "(N more)", or "none" | monospace `textareafield`, one command per line. Help: "Run once, at first boot of a new instance (cloud-init `runcmd`). Changes do not affect an already initialised VM." Plus a storage selector for where the file lives |
+| **Include** (virtual) | `fa-plus-square` | snippet volid / URL / "none" | radiogroup *None / Snippet / URL*, with selectors or an http(s) text field |
 
-- The Remove button works natively on `cicustom`. The Include row gets `never_delete: true`,
-  because clearing it happens in its editor via *None*.
-- Both editors send a normal `PUT /config` for `cicustom`, merging the other parts. Pending
-  state and permissions therefore behave like any stock field.
-- URL mode is disabled, with a tooltip, when the backend package is absent (`GET …/cloudinit-extras` → 404).
-- Existing Regenerate Image button is unchanged.
-- **Hook point:** `Proxmox.grid.ObjectGrid.initComponent` processes `me.gridRows` via
-  `me['add_<xtype>_row']` *after* `PVE.qemu.CloudInit` has built `me.rows`. It does so before
-  the store and filter are created. The extension is one `Ext.define({ override: 'PVE.qemu.CloudInit' })`
-  that sets `gridRows` and adds `add_cixcustom_row` / `add_cixinclude_row`. No stock method is
-  wrapped or replaced.
+- Commands and Include are both virtual rows derived from `cicustom.vendor`, with
+  `never_delete: true`. They are cleared in their editors.
+- Both editors load the state with `GET …/vendor/{vmid}` and submit **both values** in one
+  `PUT …/vendor/{vmid}`. They then set `cicustom` with the stock `PUT /config`, merging the other parts, so pending state and
+  permissions stay upstream's.
+- **Hook point:** `Proxmox.grid.ObjectGrid.initComponent` runs `me['add_<xtype>_row']` for each
+  `me.gridRows` entry. It does this *after* `PVE.qemu.CloudInit` has built `me.rows`, and before the store is built. The extension is one
+  `Ext.define({ override: 'PVE.qemu.CloudInit' })` that sets `gridRows` and adds the row
+  functions. No stock method is wrapped.
+- If the backend patch is not active (version gate, §6), the probe `GET /nodes/{node}/cloudinit-extras`
+  returns 404. Commands and URL/snippet-inline are then disabled with a tooltip. Custom files and the direct snippet
+  Include still work.
 
-## 3. Injection mechanism
+## 4. Packaging and injection
+
+There is **one binary package, `pve-cloudinit-extras`**, containing the GUI and the backend. Commands
+cannot work without the endpoint, and a separate package only adds a half-installed state to
+test. (The alternative, a GUI package that depends on an `-api` package, gives the same result
+with more moving parts.)
 
 | option | verdict |
 | --- | --- |
 | patch `pvemanagerlib.js` (2.4 MB, rebuilt every release) | **no**. Fragile anchors, and a bad patch breaks the entire GUI |
 | **separate JS file + one `<script>` line in `index.html.tpl`** | **yes** |
-| `dpkg-divert` of `index.html.tpl` | **no**. pve-manager's updates to the template land in the `.distrib` file and are silently lost, so the GUI can end up loading a stale template against a new `pvemanagerlib.js` |
+| `dpkg-divert` of `index.html.tpl` / `Nodes.pm` | **no**. pve-manager's updates to those files would be silently lost, leaving a stale file loaded against new code |
 
-Details:
+The package owns:
+- `/usr/share/pve-manager/js/pve-cloudinit-extras.js`. pveproxy already serves `/pve2/js/` from that
+  directory (`add_dirs` in `PVE/Service/pveproxy.pm`), so no pveproxy patch is needed.
+- `/usr/share/perl5/PVE/API2/CloudinitExtras.pm` (the endpoint).
+- `/usr/share/perl5/PVE/CloudinitExtras/Vendor.pm` (the file generator).
+- `/usr/sbin/pve-cloudinit-extras` (the CLI; see §6).
+- `/usr/sbin/pve-cloudinit-extras-patch`.
 
-- The package owns `/usr/share/pve-manager/js/pve-cloudinit-extras.js`. pveproxy already serves
-  `/pve2/js/` from that directory (`add_dirs` in `PVE/Service/pveproxy.pm`), so **no pveproxy patch
-  and no pveproxy restart** are needed. pve-modkit, by contrast, has to patch `pveproxy.pm`.
-- There is one marker line, inserted directly after the stock
-  `<script … src="/pve2/js/pvemanagerlib.js?ver=[% version %]"></script>`:
-  ```html
-  <script type="text/javascript" src="/pve2/js/pve-cloudinit-extras.js?ver=0.1.0" data-pve-cloudinit-extras></script>
-  ```
-  The `ver=` query string busts the browser cache when the package is upgraded.
-- The template is re-read on every request (`Template->new` in `pveproxy.pm`), so a patch takes
-  effect on the next page load.
-- The JS is defensive. The whole body is wrapped in `try`. It does nothing (only `console.warn`) unless
-  `PVE.qemu.CloudInit` exists and `Proxmox.grid.ObjectGrid` still has the `gridRows` loop. **The
-  worst case of an incompatible pve-manager is "the two rows don't appear"; the stock GUI keeps
-  working.**
+It patches two pve-manager files. Every added line carries a marker:
+- `index.html.tpl`: one `<script … src="/pve2/js/pve-cloudinit-extras.js?ver=<pkgver>" data-pve-cloudinit-extras>`
+  line, inserted after the stock `pvemanagerlib.js` script line. The template is re-read on every request.
+- `PVE/API2/Nodes.pm` (package `PVE::API2::Nodes::Nodeinfo`):
+  - `use PVE::API2::CloudinitExtras; # pve-cloudinit-extras` after `use PVE::API2::VZDump;`;
+  - `__PACKAGE__->register_method({subclass => 'PVE::API2::CloudinitExtras', path => 'cloudinit-extras'}); # pve-cloudinit-extras`
+    before the `subclass => "PVE::API2::Qemu"` block;
+  - then `systemctl reload-or-restart pvedaemon pveproxy`.
+
+The JS is defensive: the whole body is wrapped in `try`, and it does nothing unless `PVE.qemu.CloudInit` exists, the
+`gridRows` hook exists, and upstream has not added its own `cicustom` row.
 
 Prior art:
-- [pve-modkit](https://github.com/the-wondersmith/pve-modkit): the same shape (script tag in
-  `index.html.tpl`, `interest-noawait` triggers, idempotent patches, restore on remove).
-- [pve-nag-buster](https://github.com/foundObjects/pve-nag-buster): a dpkg/apt hook that re-patches
-  `proxmoxlib.js` on every update. It works, but it is a `sed` on minified library code.
-- [Meliox/PVE-mods](https://github.com/Meliox/PVE-mods) (sensors): patches `pvemanagerlib.js` and
-  `Nodes.pm` with backups, and **does not** survive upgrades ("reinstallation … could be required").
-- Proxmox has no supported extension point for third-party GUI code
+- [pve-modkit](https://github.com/the-wondersmith/pve-modkit): script tag in `index.html.tpl`,
+  `interest-noawait` triggers, idempotent patches, restore on remove.
+- [pve-nag-buster](https://github.com/foundObjects/pve-nag-buster): an update hook re-`sed`s `proxmoxlib.js`.
+- [Meliox/PVE-mods](https://github.com/Meliox/PVE-mods): patches `pvemanagerlib.js` and `Nodes.pm`,
+  and does not survive upgrades.
+- Proxmox offers no supported extension point
   ([forum](https://forum.proxmox.com/threads/supported-way-to-extend-the-pve-web-ui-for-a-third-party-package.185017/)).
 
-## 4. Surviving pve-manager updates
+## 5. Surviving pve-manager updates
 
-**A dpkg file trigger** (`debian/pve-cloudinit-extras.triggers`):
+**dpkg file triggers** (`debian/pve-cloudinit-extras.triggers`):
 ```
 interest-noawait /usr/share/pve-manager/index.html.tpl
+interest-noawait /usr/share/perl5/PVE/API2/Nodes.pm
 ```
-When pve-manager unpacks a new template, dpkg runs our `postinst triggered`, which runs
-`pve-cloudinit-extras-patch apply`. The apply step is idempotent. With `noawait`, pve-manager's
-configure step does not block on us. pve-manager itself uses the same mechanism
-(`interest-noawait /usr/share/perl5/PVE`).
+When pve-manager unpacks new copies, dpkg runs our `postinst triggered`, which runs
+`pve-cloudinit-extras-patch apply`. With `noawait`, pve-manager does not block on us. pve-manager itself
+uses the same mechanism (`interest-noawait /usr/share/perl5/PVE`).
 
 Rejected alternatives:
-- **apt `DPkg::Post-Invoke`**: runs after *every* apt run, and not at all for `dpkg -i`. It also
-  leaves a config file in `/etc/apt` that dpkg treats as a conffile, which gets awkward on purge.
-  The trigger fires exactly when the file changes.
-- **systemd `.path` unit** on the template: it would race with dpkg. Not needed.
+- **apt `DPkg::Post-Invoke`**: runs after every apt run, never for `dpkg -i`, and is an `/etc/apt` conffile.
+- **systemd `.path` unit**: would race with dpkg.
 
-The patch script:
-1. `flock /run/lock/pve-cloudinit-extras.lock`
-2. If the marker is already present → exit 0.
-3. Run the **version gate** (§5). If it fails → log to syslog and `/var/lib/pve-cloudinit-extras/status`, exit 0 (**never fail dpkg**).
-4. Require the anchor line to match **exactly once**. Otherwise → treat it as unknown and leave the file stock.
-5. Write a temp file, then `perl -MTemplate -e` compile it (a Template Toolkit syntax check, as pve-modkit does), then `mv` it into place atomically.
+The patch script, per file:
+1. `flock`.
+2. If the marker is already present → done.
+3. Run the version gate (§6). If it fails → log and continue with the next file. **Never fail dpkg.**
+4. Require the anchor to match **exactly once**.
+5. Write a temp file, then:
+   - template: `perl -MTemplate` compile;
+   - `Nodes.pm`: after the atomic `mv`, `perl -e 'use PVE::API2::Nodes'` load test. If it fails → restore (§8) and log.
 
-## 5. Version check
+## 6. Version check and backend
 
-The check has two layers, because the risks are different:
+**Version gate.** `/usr/share/pve-cloudinit-extras/supported` holds a range per target:
 
-| layer | rule | on failure |
+| target | initial range | risk if wrong |
 | --- | --- | --- |
-| install time (`patch apply`) | `dpkg-query -W pve-manager` ∈ `SUPPORTED` range (initially `>= 9.2 << 9.3`) **and** anchor matches exactly once | skip the patch, log the reason, GUI stays stock |
-| runtime (JS) | the classes and `gridRows` hook exist, and `PVE.qemu.CloudInit.prototype.rows` is not already defining `cicustom` (i.e. upstream has added its own field) | do nothing |
-| backend (`-api` pkg) | exact pve-manager minor allowlist, plus `perl -c`-style load test of `PVE::API2::Nodes` after patching | restore the pristine file (§6), log |
+| `gui` (template line) | `>= 9.2 << 9.3` | the rows don't appear |
+| `api` (`Nodes.pm`) | `>= 9.2 << 9.3` | a Perl load failure; guarded by the load test and restore |
 
-`SUPPORTED` lives in `/usr/share/pve-cloudinit-extras/supported`. An admin can override it with
-`/etc/pve-cloudinit-extras.conf` (`FORCE=1`) when testing a new pve-manager version. The GUI
-layer is low-risk, so the policy for it could relax to "anchor present" alone (open question 4).
-
-## 6. Backend and security
+`/etc/pve-cloudinit-extras.conf` `FORCE=1` overrides the gate for testing a new version.
 
 **What exists** (read from the installed API):
-- `cicustom` is a normal qemu config property (`pve-qm-cicustom`: `meta|network|user|vendor=<volid>`).
-  It is settable via `PUT /nodes/{node}/qemu/{vmid}/config` with **`VM.Config.Cloudinit` or
-  `VM.Config.Network`** (`$cloudinitoptions` in `PVE/API2/Qemu.pm`). qemu-server does **not**
-  check storage permissions on the referenced snippet. That is upstream's trust model, and we do not change it.
-- Listing snippets: `GET /nodes/{node}/storage/{storage}/content?content=snippets` (needs `Datastore.Audit`/`AllocateSpace`).
-- Writing snippets: **not possible**. `upload` and `download-url` both accept only `import | iso | vztmpl`.
+- `cicustom` (`meta|network|user|vendor=<volid>`) is set via `PUT /nodes/{node}/qemu/{vmid}/config`
+  with `VM.Config.Cloudinit` or `VM.Config.Network`. The referenced snippet's storage permissions are not checked.
+- Listing snippets: `GET /nodes/{node}/storage/{storage}/content?content=snippets`.
+- **Writing snippets: impossible.** `upload` and `download-url` accept only `import | iso | vztmpl`.
 - qemu-server reads snippets with a 1 MiB cap each and 3 MiB in total, and requires `vtype eq 'snippets'`.
 
-**Therefore:**
-- Field 1 and snippet-mode Include: **pure GUI, no backend.**
-- URL-mode Include: needs one small write endpoint. It ships as a **separate, optional binary
-  package `pve-cloudinit-extras-api`**, so the GUI package never patches Perl.
+**Endpoint**, `PVE::API2::CloudinitExtras` (`proxyto => 'node'`, `protected => 1`, so it runs in pvedaemon on the VM's node):
 
-`pve-cloudinit-extras-api`:
-- `/usr/share/perl5/PVE/API2/CloudinitExtras.pm` (owned by the package, never overwritten).
-- Two marker lines in `/usr/share/perl5/PVE/API2/Nodes.pm` (owned by pve-manager, package
-  `PVE::API2::Nodes::Nodeinfo`): a `use` after `use PVE::API2::VZDump;`, and a
-  `register_method({subclass => 'PVE::API2::CloudinitExtras', path => 'cloudinit-extras'})` before
-  the `subclass => "PVE::API2::Qemu"` block. Both are re-applied by
-  `interest-noawait /usr/share/perl5/PVE/API2/Nodes.pm`, then `systemctl reload-or-restart pvedaemon pveproxy`.
-- Endpoints (`proxyto => 'node'`, `protected => 1`, so they run in pvedaemon as root on the VM's node):
-  - `GET  /nodes/{node}/cloudinit-extras` → `{ version }` (feature probe)
-  - `GET  /nodes/{node}/cloudinit-extras/include/{vmid}?storage=` → `{ url }` (`VM.Audit`)
-  - `PUT  /nodes/{node}/cloudinit-extras/include/{vmid}` `{storage, url}` → writes the file, returns volid
-  - `DELETE …/include/{vmid}?storage=` → removes the managed file
-- Rules:
-  - Permissions: **`VM.Config.Cloudinit` on `/vms/{vmid}` AND `Datastore.AllocateSpace` on `/storage/{storage}`**.
-  - `{vmid}` must exist on this node.
-  - The storage must be enabled on the node, have `content snippets`, and be path-based.
-  - The filename is **fixed**, `cix-<vmid>-include.yaml`. It derives only from the integer vmid,
-    so there is **no user-controlled path and no traversal**. The path comes from `PVE::Storage::path`, never from string joins.
-  - `url`: `^https?://[\x21-\x7e]{1,2040}$`. No whitespace or control chars, which blocks injecting extra `#include` lines.
-  - Content is exactly `#include\n# managed by pve-cloudinit-extras\n<url>\n`. cloud-init skips `#` lines in include files.
-  - Existing files are overwritten only if they carry that header. Writes are atomic (`file_set_contents`).
-  - The endpoint writes **only the file**. The GUI then sets `cicustom` via the stock `PUT /config`, so
-    pending, locking and permission semantics stay upstream's.
-- **No SSRF on the host**: the node never fetches the URL. The guest does.
-- Stale managed files are harmless. `DELETE` is best-effort when switching to *None*.
+| method | path | params | permissions |
+| --- | --- | --- | --- |
+| GET | `/nodes/{node}/cloudinit-extras` | – | any authenticated (feature probe → `{version}`) |
+| GET | `…/vendor/{vmid}` | `storage` | `VM.Audit` → `{commands[], include:{type,url\|volid}, volid}` (no inlined content returned) |
+| PUT | `…/vendor/{vmid}` | `storage`, `commands?`, `include-url?` \| `include-snippet?` | `VM.Config.Cloudinit` on `/vms/{vmid}` **and** `Datastore.AllocateSpace` on `/storage/{storage}`; plus `Datastore.Audit` on the source storage when inlining a snippet → `{vendor: <volid or ''>}` for the GUI to put in `cicustom` |
+| DELETE | `…/vendor/{vmid}` | `storage` | same as PUT; removes only a file carrying `X-Managed-By` |
 
-**Alternative with zero new endpoints:** skip the `-api` package. URL mode is then unavailable,
-and a root-only CLI `pve-cloudinit-extras include <vmid> <storage> <url>` writes the pointer
-file. This fully satisfies "no new privileged endpoints" but loses URL-from-GUI.
+Rules:
+- `{vmid}` must exist on this node.
+- The storage must be enabled, have `content snippets`, and be path-based.
+- The file name is fixed and derives only from the integer vmid, so there is no traversal. The path comes from `PVE::Storage::path`.
+- `include-url` must match `^https?://[\x21-\x7e]{1,2040}$`.
+- `include-snippet` must parse as a `snippets` volid.
+- An existing file without our header is never overwritten.
+- Writes are atomic (`file_set_contents`).
+- The endpoint writes only the file. The VM config is changed by the GUI through the stock API.
+
+**CLI** (`pve-cloudinit-extras vendor <vmid> --storage … [--commands-file f] [--include-url u | --include-snippet v]`):
+root-only, uses the same generator, prints the resulting `vendor=` value. It is the fallback if the user
+chooses "no new endpoint" (open question 1).
 
 ## 7. Cluster behaviour
 
-- **Install on every node.** Each node serves its own GUI, and the backend runs on the VM's node.
-  Mixed states degrade cleanly: without the GUI package a node shows stock rows, and without the API package URL mode is disabled.
-- **Shared snippet storage** (e.g. CephFS mounted on all nodes): the file is visible
-  everywhere, and migration and HA just work.
-- **Node-local snippet storage** (for example `local` with `snippets` enabled): the file exists
-  only on the node where it was written. After migration, VM start fails
-  (`volume … does not exist`) until the file is copied. The GUI filters to shared storages by
-  default and shows a warning if a local one is chosen.
-- Setting `cicustom` changes `/etc/pve/qemu-server/<vmid>.conf` (pmxcfs), which is cluster-wide as always.
+- **Install on every node.** Each node serves its own GUI, and the endpoint runs on the VM's node.
+  Nodes still on the old version fall back as described in §3.
+- **Shared snippet storage** (e.g. CephFS): the file is visible everywhere, and migration and HA work.
+- **Node-local snippet storage:** the file exists only where it was written, so VM start fails after migration.
+  The GUI defaults to shared storages and warns if a local one is chosen.
+- `cicustom` itself lives in pmxcfs and is cluster-wide.
 
 ## 8. Uninstall guarantees
 
-- `prerm remove|upgrade|deconfigure` runs `patch remove`: delete lines carrying the marker, exactly as inserted.
-  The upgrade case is included because the new postinst re-applies the patch.
-- **Proof of stock:** afterwards, compare the file against pve-manager's own
-  `/var/lib/dpkg/info/pve-manager.md5sums`, which is equivalent to `dpkg --verify pve-manager`. If it matches → done.
-  If not (marker damaged, or another mod present) → restore from the matching `.deb`:
-  `apt-get download pve-manager=<installed>` → `dpkg-deb --fsys-tarfile | tar -xO ./usr/share/pve-manager/index.html.tpl`.
-  This avoids `apt install --reinstall pve-manager`. If the download fails, print exactly that command, and do not fail the removal.
-- The same applies to `Nodes.pm` (also owned by pve-manager), followed by a pvedaemon/pveproxy reload.
+- `prerm remove|upgrade|deconfigure`: delete the marker lines. The upgrade case is included because the new postinst re-applies.
+- **Proof of stock:** afterwards, compare both files to `/var/lib/dpkg/info/pve-manager.md5sums`
+  (equivalent to `dpkg --verify pve-manager`). If they don't match → restore the file from the matching `.deb`
+  (`apt-get download pve-manager=<installed>`, `dpkg-deb --fsys-tarfile | tar -xO <path>`).
+  If the download fails, print `apt install --reinstall pve-manager`, and never fail the removal.
+  Then `reload-or-restart pvedaemon pveproxy`.
 - `purge` removes `/var/lib/pve-cloudinit-extras` and `/etc/pve-cloudinit-extras.conf`.
-  **Snippets and `cicustom` values in VM configs are never touched.** Removing the package must not change guests.
-  `README` documents how to find them: `grep -l cicustom /etc/pve/nodes/*/qemu-server/*.conf`, `ls <storage>/snippets/cix-*`.
-- Files we own (`.js`, `.pm`) are removed by dpkg as normal.
+- **Generated `cix-*-vendor.yaml` files and `cicustom` values are never touched.** Guests do not change
+  when the package is removed; qemu-server keeps reading the files. The README documents how to find them.
 
 ## 9. Build and test
 
-- Build: `dpkg-buildpackage -us -uc -b` in a `debian:trixie` container. Arch `all`, no compiled code.
-  Lint: `lintian`, `eslint` (Proxmox's ESLint config), `perlcritic`/`perl -c` against a PVE 9.2 perl tree.
-- **Never test on the production nodes.** Use a throwaway **nested PVE 9.2 VM** (on the cluster, or local
-  Hyper-V/VirtualBox) with a `dir` storage with `snippets` enabled and a Debian 13 genericcloud template.
+- Build: `dpkg-buildpackage -us -uc -b` in `debian:trixie`, Arch `all`.
+  Lint: `lintian`, `eslint`, `perl -c` against a PVE 9.2 perl tree.
+  Unit tests for `Vendor.pm`: every row of the §2 table, hostile input (`\n`, `\r`, `": x`, `\u0000`,
+  a boundary string inside a command, 1 MiB overflow); parse the output back with Python `email` + `yaml.safe_load`.
+- **Never test on the production nodes.** Use a throwaway nested PVE 9.2 VM with a `dir` storage with snippets enabled, and a
+  Debian 13 genericcloud template.
 - Test matrix, each step asserting `dpkg --verify pve-manager` output and GUI load:
-  1. install → marker present, rows visible, stock rows unchanged;
-  2. `apt install --reinstall pve-manager` → the trigger re-applies;
-  3. upgrade/downgrade pve-manager across a minor (9.1 → 9.2) → the patch re-applies or stays stock per the gate;
-  4. edit the anchor in a test copy / set an out-of-range version → GUI stock, reason logged;
-  5. `apt remove` → `dpkg --verify` clean, no marker, `/pve2/js/pve-cloudinit-extras.js` 404;
-     then `apt purge`;
-  6. API: permission matrix with a non-root user (with/without `VM.Config.Cloudinit`, `Datastore.AllocateSpace`),
-     bad URLs (newline, `file://`, spaces), foreign existing file, local vs shared storage;
-  7. guest: vendor snippet and URL include actually applied (`cloud-init query vendordata`, `/var/log/cloud-init.log`),
-     with generated user/keys still present.
-- JS fast loop without a PVE VM: a local static harness serving ExtJS + `proxmoxlib.js` +
-  `pvemanagerlib.js` copied from the test VM, with a mock of `/api2/extjs/...` (pending/config/storage content).
+  1. install → both markers present, rows visible, stock rows unchanged;
+  2. `apt install --reinstall pve-manager` → both triggers re-apply;
+  3. pve-manager 9.1 ↔ 9.2 → re-applies, or stays stock per the gate;
+  4. broken anchor / out-of-range version → stock GUI, API unpatched, reason logged;
+  5. `apt remove` → `dpkg --verify` clean, no markers, JS 404, `…/cloudinit-extras` 404; then `purge`;
+  6. API permission matrix with a non-root user, and a foreign file at the fixed path → refused;
+  7. **must-test in a guest:**
+     - commands only, URL only, snippet only, both;
+     - `runcmd` executes, and the generated user/keys are still applied;
+     - an included cloud-config that has its own `runcmd` → both run (`merge_how` append);
+     - `cicustom user=` with its own `runcmd` → confirm ours is replaced, as documented;
+     - check with `cloud-init query vendordata` and `/var/log/cloud-init.log`.
+- JS fast loop: a local static harness serving ExtJS, `proxmoxlib.js` and `pvemanagerlib.js` copied from the
+  test VM, with mocked `/api2/extjs/...`.
 
 ## 10. Risks and open questions
 
 Risks:
-- **Changes to vendor data do not re-run cloud-init on existing VMs.** The NoCloud
-  `instance-id` is `sha1(user-data . network-data)` only, so an Include change is seen
-  only on a fresh instance or after `cloud-init clean` in the guest. The GUI states this in the editor.
-- `citype configdrive2` puts vendor data in `vendor_data.json`, which OpenStack datasources parse differently.
-  Include is supported for `nocloud` (the Linux default) only. Other types get a warning.
-- A full snippet storage blocks snippet writes and VM starts that need them.
-- Upstream could add its own `cicustom` GUI field. The runtime guard (§5) then turns ours off.
-- Patching `Nodes.pm` is the one piece that can break the API. It is isolated in the optional package with a strict allowlist and a load test.
+- **Changes do not re-run cloud-init on existing VMs** (§1).
+- Include and Commands are safe only with `citype nocloud`. `configdrive2` puts vendor data in
+  `vendor_data.json`, which is parsed differently. The GUI warns for other types.
+- A full snippet storage blocks writes and VM starts.
+- A snippet Include combined with Commands is an inlined **copy**. Later edits to that snippet are not seen until the file is saved again.
+- Patching `Nodes.pm` can break the API. This is guarded by the strict gate, the load test and the restore.
+- Upstream may add its own `cicustom` field. The runtime guard then turns ours off.
 
 Open questions for the user:
-1. Is reading **A** right (cicustom editor + one include), or do you want inline `runcmd` (B) too?
-2. URL include from the GUI: accept the optional `-api` package (one new endpoint, `Nodes.pm`
-   patch), or keep zero new endpoints and use the root CLI for URLs?
-3. Which storage should hold snippets? Options: enable `snippets` on an existing
-   storage, or create a small dedicated CephFS/dir storage. This is a cluster config change you decide.
-4. Version policy for the GUI patch: strict minor allowlist (safe, but needs a package bump each
-   PVE minor) or "anchor present" (keeps working across minors)?
-5. Permission for writing the include file: `Datastore.AllocateSpace` (proposed) or the stricter
-   `Datastore.AllocateTemplate`, as `upload` uses?
-6. Where to build and test: a nested PVE VM on this cluster (which one, which storage) or on your workstation?
+1. **Commands and URL include from the GUI through the endpoint** (the recommendation: one new endpoint and a `Nodes.pm` patch),
+   or **both CLI-only** (no new endpoint; the GUI keeps only Custom files and the direct snippet Include)?
+2. Also add a **`bootcmd` toggle** ("run on every boot") to Commands? `bootcmd` runs early, before networking, on every boot.
+3. Which storage should hold snippets? Enable `snippets` on an existing storage, or a small dedicated one?
+4. Version policy for the GUI line: strict minor allowlist, or "anchor present"? (`Nodes.pm` stays strict.)
+5. Permission for writing the vendor file: `Datastore.AllocateSpace` (proposed) or `Datastore.AllocateTemplate`, as `upload` uses?
+6. Where to build and test: which host or storage for the throwaway nested PVE VM?

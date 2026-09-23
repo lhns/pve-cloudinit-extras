@@ -1,5 +1,5 @@
 #!/bin/sh
-# Snippets and cicustom values in VM configs are deliberately left alone.
+# Generated cix-*-vendor.yaml snippets and cicustom values are deliberately left alone.
 set -e
 if [ "$1" = purge ]; then
     rm -rf /var/lib/pve-cloudinit-extras /etc/pve-cloudinit-extras.conf
