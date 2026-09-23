@@ -101,6 +101,16 @@ storage config itself.
 4. Version policy: allowlist of pve-manager major.minor (9.2) plus the exact-anchor check.
 5. Writing the snippet needs `Datastore.AllocateTemplate` on the storage and `VM.Config.Cloudinit` on the VM.
 
+## Known limitations
+
+- Install it on every node. A node without it shows the generated rows as "API not active".
+- Only `citype nocloud` is supported.
+- A cloned VM points at the source VM's generated file until one of its fields is saved.
+- A snippet included together with commands is copied in; edits to it apply only when a field is saved again.
+- With node-local snippet storage, a migrated VM won't start until the file is copied.
+- If pve-manager and the PVE libraries it needs upgrade in the same run, the API may stay stock (logged)
+  until `pve-cloudinit-extras-patch apply` is run.
+
 ## Test on a throwaway PVE
 
 Do not try it on production nodes first. The CI end-to-end job (`tests/e2e/run.sh`) does this on
