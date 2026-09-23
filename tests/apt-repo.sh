@@ -75,9 +75,9 @@ rejects() {  # rejects WHAT PATTERN
   echo "OK: apt rejects $1"
 }
 cp -r /srv/repo /srv/orig
-# Same length, so the size check cannot catch it first. apt prefers Packages.gz: tamper both.
+# Same length, so the size check cannot catch it first. Without Packages.gz, apt falls back to Packages.
 sed -i 's/^Maintainer: ./Maintainer: X/' /srv/repo/Packages
-gzip -9nkf /srv/repo/Packages
+rm /srv/repo/Packages.gz
 cmp -s /srv/repo/Packages /srv/orig/Packages && fail "tampering did nothing"
 rejects "tampered Packages" 'Hash Sum mismatch'
 
