@@ -17,18 +17,16 @@ const RUNCMD = [
 ].join('\n');
 const BOOTCMD = 'echo boot >> /var/tmp/cix-boots';
 
-async function login(page, request) {
-    const res = await request.post(`${PVE_URL}/api2/json/access/ticket`, {
-        form: { username: 'root@pam', password: PVE_PASSWORD },
-    });
-    expect(res.ok()).toBeTruthy();
-    const { ticket } = (await res.json()).data;
-    const host = new URL(PVE_URL).hostname;
-    await page.context().addCookies([{ name: 'PVEAuthCookie', value: ticket, domain: host, path: '/', secure: true }]);
+// through the real login form: it also loads the user's capabilities the GUI needs
+async function login(page) {
+    await page.goto(`${PVE_URL}/`);
+    await page.locator('input[name=username]').fill('root', { timeout: 60000 });
+    await page.locator('input[name=password]').fill(PVE_PASSWORD);
+    await page.getByRole('button', { name: 'Login' }).click();
+    await page.locator('.x-tree-node-text', { hasText: 'Datacenter' }).first().waitFor({ timeout: 60000 });
 }
 
 async function openCloudInit(page) {
-    await page.goto(`${PVE_URL}/`);
     // what a user does: click the VM in the resource tree, then "Cloud-Init" in its menu
     await page.locator('.x-tree-node-text', { hasText: `${E2E_VMID} (` }).first().click({ timeout: 60000 });
     await page.locator('.x-treelist-item-text', { hasText: /^Cloud-Init$/ }).first().click({ timeout: 60000 });
@@ -60,7 +58,7 @@ test('Cloud-Init tab on a real PVE', async ({ page, request }) => {
     page.on('console', (m) => m.type() !== 'log' && console.log('console', m.type(), m.text()));
     const warnings = [];
     page.on('console', (m) => m.type() === 'warning' && warnings.push(m.text()));
-    await login(page, request);
+    await login(page);
     await openCloudInit(page);
 
     for (const h of ['User', 'SSH public key', 'Upgrade packages']) {

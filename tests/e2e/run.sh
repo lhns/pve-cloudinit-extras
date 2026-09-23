@@ -301,12 +301,18 @@ echo boot2 >> /var/tmp/cix-boots2" "$RUNCMD_TEXT
 touch /var/tmp/cix-runcmd2"
 check "API update of the vendor snippet" test $? = 0
 OLD=$(boot_id)
+guest 'sudo systemctl reboot' >/dev/null 2>&1
+wait_boot "$OLD" "guest rebooted from inside after the change"
+BOOT_R=$(guest 'cat /var/tmp/cix-boots2 2>/dev/null | wc -l')
+note "after changing vendor data and a reboot from inside the guest: new bootcmd ran=$BOOT_R time(s)"
+echo "BOOTCMD_CHANGE_AFTER_GUEST_REBOOT=$BOOT_R" >> "$SHOTS/findings.env"
+OLD=$(boot_id)
 pve "qm shutdown $VMID --timeout 180 --forceStop 1 && qm start $VMID" > /dev/null 2>&1
 wait_boot "$OLD" "guest back after VM stop/start"
 BOOT2=$(guest 'cat /var/tmp/cix-boots2 2>/dev/null | wc -l')
 RUN2=$(guest 'test -f /var/tmp/cix-runcmd2 && echo yes || echo no')
 note "after changing vendor data and a VM stop/start: new bootcmd ran=$BOOT2 time(s), new runcmd ran=$RUN2"
-check "old bootcmd line still runs every boot (3 lines)" test "$(guest 'wc -l < /var/tmp/cix-boots')" = 3
+check "old bootcmd line still runs every boot (4 lines)" test "$(guest 'wc -l < /var/tmp/cix-boots')" = 4
 echo "BOOTCMD_CHANGE_APPLIED=$BOOT2" >> "$SHOTS/findings.env"
 echo "RUNCMD_CHANGE_APPLIED=$RUN2" >> "$SHOTS/findings.env"
 pve "qm shutdown $VMID --timeout 180 --forceStop 1" > /dev/null 2>&1
