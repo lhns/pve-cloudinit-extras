@@ -2,7 +2,7 @@
 # Never fail dpkg: an unpatchable pve-manager leaves the GUI and API stock.
 set -e
 case "$1" in
-    configure|triggered)
+    configure|triggered|abort-remove|abort-upgrade|abort-deconfigure)
         pve-cloudinit-extras-patch gui apply || true
         pve-cloudinit-extras-patch api apply || true
         ;;

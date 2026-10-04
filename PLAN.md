@@ -169,8 +169,9 @@ start elsewhere until the file is copied (the editor warns). `cicustom` lives in
 `prerm remove|upgrade|deconfigure` strips our lines, then compares each file to pve-manager's
 md5sums. If it differs, it is restored from the matching `.deb` (apt cache, else
 `apt-get download pve-manager=<installed>`); if that fails, it prints
-`apt install --reinstall pve-manager` and still succeeds. `purge` removes the state directory and
-`/etc/pve-cloudinit-extras.conf`. **Generated snippets and `cicustom` values are left alone**, so
+`apt install --reinstall pve-manager` and still succeeds. If a marker line survives, `prerm`
+fails, so the module Nodes.pm loads is never deleted under it; `postinst abort-remove` re-applies.
+`purge` removes the state directory, the lock and `/etc/pve-cloudinit-extras.conf`. **Generated snippets and `cicustom` values are left alone**, so
 guests do not change.
 
 ## 9. Tests

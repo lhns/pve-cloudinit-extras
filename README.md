@@ -73,9 +73,13 @@ apt remove pve-cloudinit-extras   # or: apt purge
 ```
 
 Removal deletes the marker lines and checks both pve-manager files against pve-manager's
-md5sums; if they differ, it restores them from the pve-manager `.deb`. Generated snippets and
-`cicustom` values are **left in place**, so guests do not change. To find them:
+md5sums; if they differ, it restores them from the pve-manager `.deb`. If a marker line cannot be
+deleted, removal is refused and the package stays installed. Generated snippets and
+`cicustom` values are **left in place**, so guests do not change; deleting a snippet a VM still
+references makes that VM fail to start. To find them:
 `grep -l cicustom /etc/pve/nodes/*/qemu-server/*.conf` and `ls <storage path>/snippets/cix-*`.
+The apt source and key from "Install via apt" are yours to delete:
+`rm /etc/apt/sources.list.d/pve-cloudinit-extras.sources /usr/share/keyrings/pve-cloudinit-extras.gpg`.
 
 ## How it hooks in and survives upgrades
 
@@ -138,7 +142,7 @@ a VM, add a `dir` storage with snippets content, install the `.deb`, and create 
 | --- | --- | --- |
 | build | `dpkg-buildpackage` on Debian 13, `lintian --fail-on warning`, `dpkg-deb --contents` checks | `tests/deb-contents.sh` |
 | Perl | generator and endpoint: permissions, path handling, header-guarded overwrite, URL validation, all bootcmd × runcmd × include combinations with hostile text, parsed back with Python `email` + `yaml.safe_load` | `t/` |
-| lifecycle | real pve-manager `.deb`s in a Debian 13 container: install, reinstall, upgrade, pve-manager reinstall/upgrade/downgrade (trigger), unsupported version, missing/duplicated anchors, concurrency, remove/purge byte-identical, restore from `.deb` | `tests/lifecycle.sh` |
+| lifecycle | real pve-manager `.deb`s in a Debian 13 container: install, reinstall, upgrade, pve-manager reinstall/upgrade/downgrade (trigger), unsupported version, missing/duplicated anchors, concurrency, remove/purge byte-identical (every pve-manager file, sha256, mode, owner), no traces left, refused removal, restore from `.deb` | `tests/lifecycle.sh` |
 | GUI | ESLint; headless Chromium with the real ExtJS, `proxmoxlib.js` and `pvemanagerlib.js` against a mocked API | `tests/js/gui.spec.js` |
 | e2e | nested PVE 9.2 from the ISO, real API/GUI, cloud-init guest | `tests/e2e/run.sh` |
 | apt | signed flat repository over HTTP, installed with signature checks; tampered `Packages` and `InRelease` rejected; after each release and weekly, the real `releases/latest/download/` URL | `tests/apt-repo.sh` |

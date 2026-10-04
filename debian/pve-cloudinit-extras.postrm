@@ -3,6 +3,7 @@
 set -e
 if [ "$1" = purge ]; then
     rm -rf /var/lib/pve-cloudinit-extras /etc/pve-cloudinit-extras.conf
+    rm -f /run/lock/pve-cloudinit-extras.lock
 fi
 #DEBHELPER#
 exit 0
