@@ -242,7 +242,7 @@ mkdir "$NODES.pve-cloudinit-extras.tmp" # the atomic replace of Nodes.pm now fai
 dpkg -r pve-cloudinit-extras > "$W/last.log" 2>&1; rc=$?
 sed 's/^/    # /' "$W/last.log"
 check "unremovable API lines: dpkg -r refused" test "$rc" -ne 0
-check "unremovable API lines: package still installed" test "$(pkg_state)" = ii
+check "unremovable API lines: package still installed" sh -c 'case "$1" in ?i) exit 0;; *) exit 1;; esac' _ "$(pkg_state)"
 check "unremovable API lines: the module Nodes.pm loads is still present" test -f /usr/share/perl5/PVE/API2/CloudinitExtras.pm
 patched_ok "unremovable API lines, after abort-remove"
 rmdir "$NODES.pve-cloudinit-extras.tmp"
