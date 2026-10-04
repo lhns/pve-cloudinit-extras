@@ -1,7 +1,7 @@
 pve-cloudinit-extras (0.1.2) trixie; urgency=medium
 
-  * Refuse removal while a marker line survives, instead of leaving PVE loading a
-    deleted module.
+  * Refuse removal while a marker line survives, instead of leaving PVE
+    loading a deleted module.
   * Re-apply the hooks when a removal is aborted.
   * Remove the lock file on purge.
 
