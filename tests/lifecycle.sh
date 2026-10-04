@@ -214,6 +214,67 @@ patched_ok "installed on $V91, upgraded to $V92B"
 dpkg_ok "purge" dpkg -P pve-cloudinit-extras
 check "final purge: files stock" both_stock
 
+
+# ---------------------------------------------------------------- uninstall
+pkg_state() { dpkg-query -W -f='${db:Status-Abbrev}' pve-cloudinit-extras 2>/dev/null | tr -d ' '; }
+# Every regular file of pve-manager: sha256, mode, owner.
+pm_snapshot() {
+    dpkg-query -L pve-manager | while IFS= read -r f; do [ -f "$f" ] && [ ! -L "$f" ] && printf '%s\n' "$f"; done > "$W/pm.files"
+    { xargs -d '\n' sha256sum < "$W/pm.files"; xargs -d '\n' stat -c '%a %u %g %n' < "$W/pm.files"; } | LC_ALL=C sort
+}
+# Traces of the package outside its own state dir and config.
+traces() {
+    dpkg-divert --list | grep -i cloudinit-extras
+    grep -s cloudinit-extras /var/lib/dpkg/triggers/File
+    grep -rlsI -e CloudinitExtras -e pve-cloudinit-extras /usr/share/perl5 /usr/share/pve-manager /etc/apt \
+        /usr/share/keyrings /etc/systemd /usr/lib/systemd /etc/cron.d /etc/cron.daily
+    find /usr /etc /var/lib /run -xdev \( -name '*.pve-cloudinit-extras.tmp' -o -name '*cloudinit-extras*' \) \
+        ! -path '/var/lib/pve-cloudinit-extras*' ! -path /etc/pve-cloudinit-extras.conf \
+        ! -path '/var/lib/dpkg/info/pve-cloudinit-extras.*' ! -path '/run/lock/pve-cloudinit-extras.lock' 2>/dev/null
+}
+none() { local out; out=$("$@"); [ -z "$out" ] || { echo "$out" | sed 's/^/    # left: /'; return 1; }; }
+
+# A marker line that cannot be removed must stop the removal: otherwise Nodes.pm keeps loading
+# the module dpkg is about to delete, and pvedaemon/pveproxy fail on their next start.
+echo 'SKIP_LOAD_TEST=1' > /etc/pve-cloudinit-extras.conf
+dpkg_ok "install for the failed-removal case" dpkg -i "$OURDEB"
+mkdir "$NODES.pve-cloudinit-extras.tmp" # the atomic replace of Nodes.pm now fails
+dpkg -r pve-cloudinit-extras > "$W/last.log" 2>&1; rc=$?
+sed 's/^/    # /' "$W/last.log"
+check "unremovable API lines: dpkg -r refused" test "$rc" -ne 0
+check "unremovable API lines: package still installed" test "$(pkg_state)" = ii
+check "unremovable API lines: the module Nodes.pm loads is still present" test -f /usr/share/perl5/PVE/API2/CloudinitExtras.pm
+patched_ok "unremovable API lines, after abort-remove"
+rmdir "$NODES.pve-cloudinit-extras.tmp"
+dpkg_ok "remove once the cause is gone" dpkg -r pve-cloudinit-extras
+check "remove after refusal: both files stock" both_stock
+dpkg_ok "purge" dpkg -P pve-cloudinit-extras
+
+# Uninstall with apt, as on a node.
+S0=$(pm_snapshot)
+check "before install: no traces" none traces
+echo 'SKIP_LOAD_TEST=1' > /etc/pve-cloudinit-extras.conf
+dpkg_ok "apt-get install" apt-get install -y -q "$OURDEB"
+patched_ok "apt-get install"
+dpkg-query -L pve-cloudinit-extras | while IFS= read -r f; do [ -d "$f" ] || printf '%s\n' "$f"; done > "$W/our.files"
+check "package ships files" test -s "$W/our.files"
+diff <(echo "$S0") <(pm_snapshot) | awk '/^[<>]/ {print $NF}' | LC_ALL=C sort -u > "$W/changed"
+check "installed: only the two hooked pve-manager files changed" \
+    test "$(cat "$W/changed")" = "$(printf '%s\n' "$NODES" "$TPL" | LC_ALL=C sort)"
+
+dpkg_ok "apt-get remove" apt-get remove -y -q pve-cloudinit-extras
+check "apt-get remove: every pve-manager file byte-identical, same mode and owner" test "$(pm_snapshot)" = "$S0"
+check "apt-get remove: dpkg --verify pve-manager clean" both_stock
+check "apt-get remove: no file of the package left" none sh -c 'while IFS= read -r f; do [ -e "$f" ] && echo "$f"; done < "$1"' _ "$W/our.files"
+check "apt-get remove: no diversion, trigger interest, unit, apt source, key or temp file" none traces
+check "apt-get remove: package not installed" sh -c 'case "$(dpkg-query -W -f="\${db:Status-Abbrev}" pve-cloudinit-extras 2>/dev/null)" in rc*|un*|pn*|"") exit 0;; *) exit 1;; esac'
+
+dpkg_ok "apt-get purge" apt-get purge -y -q pve-cloudinit-extras
+check "apt-get purge: every pve-manager file byte-identical, same mode and owner" test "$(pm_snapshot)" = "$S0"
+check "apt-get purge: no traces" none traces
+check "apt-get purge: state, config and lock gone" none sh -c 'ls -d /var/lib/pve-cloudinit-extras /etc/pve-cloudinit-extras.conf /run/lock/pve-cloudinit-extras.lock /var/lib/dpkg/info/pve-cloudinit-extras.* 2>/dev/null'
+check "apt-get purge: unknown to dpkg" sh -c 'case "$(dpkg-query -W -f="\${db:Status-Abbrev}" pve-cloudinit-extras 2>/dev/null)" in un*|pn*|"") exit 0;; *) exit 1;; esac'
+
 echo "1..$N"
 [ "$FAILED" = 0 ] && echo "# all $N passed" || echo "# $FAILED of $N FAILED"
 exit $((FAILED > 0))

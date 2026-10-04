@@ -6,5 +6,16 @@ case "$1" in
         pve-cloudinit-extras-patch gui remove || true
         ;;
 esac
+# Refuse removal while a marker line survives: Nodes.pm would still load the module that is
+# about to be deleted, and pvedaemon/pveproxy would not start again.
+case "$1" in
+    remove|deconfigure)
+        if grep -qs '# pve-cloudinit-extras$' /usr/share/perl5/PVE/API2/Nodes.pm ||
+           grep -qs 'data-pve-cloudinit-extras' /usr/share/pve-manager/index.html.tpl; then
+            echo "pve-cloudinit-extras: marker lines could not be removed (see pve-cloudinit-extras-patch status); not removing" >&2
+            exit 1
+        fi
+        ;;
+esac
 #DEBHELPER#
 exit 0
